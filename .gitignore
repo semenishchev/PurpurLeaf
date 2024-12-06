@@ -46,8 +46,8 @@ out/
 # other stuff
 run/
 
-forktest-server
-forktest-api
+purpurleaf-api/
+purpurleaf-server/
 paper-api-generator
 
 !gradle/wrapper/gradle-wrapper.jar

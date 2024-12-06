@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 
     // In general, keep this version in sync with upstream. Sometimes a newer version than upstream might work, but an older version is extremely likely to break.
-    id("io.papermc.paperweight.patcher") version "1.7.1"
+    id("io.papermc.paperweight.patcher") version "1.7.7"
 }
 
 val paperMavenPublicUrl = "https://repo.papermc.io/repository/maven-public/"
@@ -51,19 +51,21 @@ subprojects {
 }
 
 paperweight {
-    serverProject = project(":forktest-server")
+    serverProject = project(":purpurleaf-server")
 
     remapRepo = paperMavenPublicUrl
     decompileRepo = paperMavenPublicUrl
-
-    usePaperUpstream(providers.gradleProperty("paperRef")) {
-        withPaperPatcher {
+    useStandardUpstream("purpur") {
+        url.set(github("PurpurMC", "Purpur"))
+        ref.set(providers.gradleProperty("purpurRef"))
+        withStandardPatcher {
+            apiSourceDirPath.set("Purpur-API")
+            serverSourceDirPath.set("Purpur-Server")
             apiPatchDir = layout.projectDirectory.dir("patches/api")
-            apiOutputDir = layout.projectDirectory.dir("forktest-api")
+            apiOutputDir = layout.projectDirectory.dir("purpurleaf-api")
 
             serverPatchDir = layout.projectDirectory.dir("patches/server")
-            serverOutputDir = layout.projectDirectory.dir("forktest-server")
-
+            serverOutputDir = layout.projectDirectory.dir("purpurleaf-server")
         }
         patchTasks.register("generatedApi") {
             isBareDirectory = true
@@ -72,19 +74,6 @@ paperweight {
             outputDir = layout.projectDirectory.dir("paper-api-generator/generated")
         }
     }
-}
-
-//
-// Everything below here is optional if you don't care about publishing API or dev bundles to your repository
-//
-
-tasks.generateDevelopmentBundle {
-    apiCoordinates = "com.example.paperfork:forktest-api"
-    libraryRepositories = listOf(
-        "https://repo.maven.apache.org/maven2/",
-        paperMavenPublicUrl,
-        // "https://my.repo/", // This should be a repo hosting your API (in this example, 'com.example.paperfork:forktest-api')
-    )
 }
 
 allprojects {
