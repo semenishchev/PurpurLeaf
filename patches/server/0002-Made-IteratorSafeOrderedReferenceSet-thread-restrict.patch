@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Oleksandr Semenishchev <sashasemenishchev@gmail.com>
+Date: Fri, 6 Dec 2024 15:55:38 +0100
+Subject: [PATCH] Made IteratorSafeOrderedReferenceSet thread restricted
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/list/IteratorSafeOrderedReferenceSet.java b/src/main/java/ca/spottedleaf/moonrise/common/list/IteratorSafeOrderedReferenceSet.java
+index c21e00812f1aaa1279834a0562d360d6b89e146c..986ef1aaa106040620d414083d2557525969ae32 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/list/IteratorSafeOrderedReferenceSet.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/list/IteratorSafeOrderedReferenceSet.java
+@@ -19,17 +19,24 @@ public final class IteratorSafeOrderedReferenceSet<E> {
+     private final double maxFragFactor;
+ 
+     private int iteratorCount;
++    private final boolean threadRestricted; // PurpurLeaf - thread restricted iterators
++
++    public IteratorSafeOrderedReferenceSet(boolean threadRestricted) {
++        this(16, 0.75f, 16, 0.2, threadRestricted);
++    }
+ 
+     public IteratorSafeOrderedReferenceSet() {
+-        this(16, 0.75f, 16, 0.2);
++        this(16, 0.75f, 16, 0.2, false);
+     }
+ 
+     public IteratorSafeOrderedReferenceSet(final int setCapacity, final float setLoadFactor, final int arrayCapacity,
+-                                           final double maxFragFactor) {
++                                           final double maxFragFactor,
++                                           final boolean threadRestricted) { // PurpurLeaf
+         this.indexMap = new Reference2IntLinkedOpenHashMap<>(setCapacity, setLoadFactor);
+         this.indexMap.defaultReturnValue(-1);
+         this.maxFragFactor = maxFragFactor;
+         this.listElements = (E[])new Object[arrayCapacity];
++        this.threadRestricted = threadRestricted; // PurpurLeaf
+     }
+ 
+     /*
+@@ -78,8 +85,18 @@ public final class IteratorSafeOrderedReferenceSet<E> {
+         return 1.0 - ((double)this.indexMap.size() / (double)this.listSize);
+     }
+ 
++    // PurpurLeaf start - thread restricted iterator
++    private boolean allowSafeIteration() {
++        return !this.threadRestricted || org.bukkit.Bukkit.isPrimaryThread();
++    }
++    // PurpurLeaf end
++
+     public int createRawIterator() {
+-        ++this.iteratorCount;
++        // PurpurLeaf start - restricted iterators
++        if(allowSafeIteration()) {
++            ++this.iteratorCount;
++        }
++        // PurpurLeaf end
+         if (this.indexMap.isEmpty()) {
+             return -1;
+         } else {
+@@ -100,10 +117,9 @@ public final class IteratorSafeOrderedReferenceSet<E> {
+     }
+ 
+     public void finishRawIterator() {
+-        if (--this.iteratorCount == 0) {
+-            if (this.getFragFactor() >= this.maxFragFactor) {
+-                this.defrag();
+-            }
++        if(!allowSafeIteration()) return; // PurpurLeaf - Refactor and use restricted thread logic
++        if (--this.iteratorCount == 0 && this.getFragFactor() >= this.maxFragFactor) {
++            this.defrag();
+         }
+     }
+ 
+@@ -117,7 +133,7 @@ public final class IteratorSafeOrderedReferenceSet<E> {
+                 throw new IllegalStateException();
+             }
+             this.listElements[index] = null;
+-            if (this.iteratorCount == 0 && this.getFragFactor() >= this.maxFragFactor) {
++            if (allowSafeIteration() && this.iteratorCount == 0 && this.getFragFactor() >= this.maxFragFactor) { // PurpurLeaf
+                 this.defrag();
+             }
+             //this.check();

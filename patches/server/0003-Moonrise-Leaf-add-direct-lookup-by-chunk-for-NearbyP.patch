@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Oleksandr Semenishchev <sashasemenishchev@gmail.com>
+Date: Fri, 6 Dec 2024 16:03:55 +0100
+Subject: [PATCH] Moonrise&Leaf - add direct lookup by chunk for NearbyPlayers
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java b/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java
+index ab093b0e8ac6f762921eb1d15f5217345c4eba05..a152adf327b6debe4c87c7efbde2f83dd207e596 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java
+@@ -37,6 +37,14 @@ public final class NearbyPlayers {
+     private final ServerLevel world;
+     private final Reference2ReferenceOpenHashMap<ServerPlayer, TrackedPlayer[]> players = new Reference2ReferenceOpenHashMap<>();
+     private final Long2ReferenceOpenHashMap<TrackedChunk> byChunk = new Long2ReferenceOpenHashMap<>();
++    // Moonrise start - Add direct lookup by chunk for NearbyPlayers
++    private final Long2ReferenceOpenHashMap<ReferenceList<ServerPlayer>>[] directByChunk = new Long2ReferenceOpenHashMap[TOTAL_MAP_TYPES];
++    {
++        for (int i = 0; i < this.directByChunk.length; ++i) {
++            this.directByChunk[i] = new Long2ReferenceOpenHashMap<>();
++        }
++    }
++    // Moonrise end - Add direct lookup by chunk for NearbyPlayers
+ 
+     public NearbyPlayers(final ServerLevel world) {
+         this.world = world;
+@@ -87,7 +95,7 @@ public final class NearbyPlayers {
+     }
+ 
+     public TrackedChunk getChunk(final ChunkPos pos) {
+-        return this.byChunk.get(CoordinateUtils.getChunkKey(pos));
++        return this.byChunk.get(pos.longKey); // Leaf - Cache chunk key
+     }
+ 
+     public TrackedChunk getChunk(final BlockPos pos) {
+@@ -95,37 +103,40 @@ public final class NearbyPlayers {
+     }
+ 
+     public ReferenceList<ServerPlayer> getPlayers(final BlockPos pos, final NearbyMapType type) {
+-        final TrackedChunk chunk = this.byChunk.get(CoordinateUtils.getChunkKey(pos));
+-
+-        return chunk == null ? null : chunk.players[type.ordinal()];
++        return this.directByChunk[type.ordinal()].get(CoordinateUtils.getChunkKey(pos)); // Moonrise - Add direct lookup by chunk for NearbyPlayers
+     }
+ 
+     public ReferenceList<ServerPlayer> getPlayers(final ChunkPos pos, final NearbyMapType type) {
+-        final TrackedChunk chunk = this.byChunk.get(CoordinateUtils.getChunkKey(pos));
+-
+-        return chunk == null ? null : chunk.players[type.ordinal()];
++        return this.directByChunk[type.ordinal()].get(pos.longKey); // Moonrise - Add direct lookup by chunk for NearbyPlayers // Leaf - Cache chunk key
+     }
+ 
+     public ReferenceList<ServerPlayer> getPlayersByChunk(final int chunkX, final int chunkZ, final NearbyMapType type) {
+-        final TrackedChunk chunk = this.byChunk.get(CoordinateUtils.getChunkKey(chunkX, chunkZ));
+-
+-        return chunk == null ? null : chunk.players[type.ordinal()];
++        return this.directByChunk[type.ordinal()].get(CoordinateUtils.getChunkKey(chunkX, chunkZ)); // Moonrise - Add direct lookup by chunk for NearbyPlayers
+     }
+ 
+     public ReferenceList<ServerPlayer> getPlayersByBlock(final int blockX, final int blockZ, final NearbyMapType type) {
+-        final TrackedChunk chunk = this.byChunk.get(CoordinateUtils.getChunkKey(blockX >> 4, blockZ >> 4));
+-
+-        return chunk == null ? null : chunk.players[type.ordinal()];
++        return this.directByChunk[type.ordinal()].get(CoordinateUtils.getChunkKey(blockX >> 4, blockZ >> 4)); // Moonrise - Add direct lookup by chunk for NearbyPlayers
+     }
+ 
+     public static final class TrackedChunk {
+ 
+         private static final ServerPlayer[] EMPTY_PLAYERS_ARRAY = new ServerPlayer[0];
+ 
++        // Moonrise start - Add direct lookup by chunk for NearbyPlayers
++        private final long chunkKey;
++        private final NearbyPlayers nearbyPlayers;
++        // Moonrise end - Add direct lookup by chunk for NearbyPlayers
+         private final ReferenceList<ServerPlayer>[] players = new ReferenceList[TOTAL_MAP_TYPES];
+         private int nonEmptyLists;
+         private long updateCount;
+ 
++        // Moonrise start - Add direct lookup by chunk for NearbyPlayers
++        public TrackedChunk(final long chunkKey, final NearbyPlayers nearbyPlayers) {
++            this.chunkKey = chunkKey;
++            this.nearbyPlayers = nearbyPlayers;
++        }
++        // Moonrise end - Add direct lookup by chunk for NearbyPlayers
++
+         public boolean isEmpty() {
+             return this.nonEmptyLists == 0;
+         }
+@@ -145,7 +156,11 @@ public final class NearbyPlayers {
+             final ReferenceList<ServerPlayer> list = this.players[idx];
+             if (list == null) {
+                 ++this.nonEmptyLists;
+-                (this.players[idx] = new ReferenceList<>(EMPTY_PLAYERS_ARRAY)).add(player);
++                // Moonrise start - Add direct lookup by chunk for NearbyPlayers
++                final ReferenceList<ServerPlayer> players = (this.players[idx] = new ReferenceList<>(EMPTY_PLAYERS_ARRAY));
++                this.nearbyPlayers.directByChunk[idx].put(this.chunkKey, players);
++                players.add(player);
++                // Moonrise end - Add direct lookup by chunk for NearbyPlayers
+                 return;
+             }
+ 
+@@ -169,6 +184,7 @@ public final class NearbyPlayers {
+ 
+             if (list.size() == 0) {
+                 this.players[idx] = null;
++                this.nearbyPlayers.directByChunk[idx].remove(this.chunkKey); // Moonrise - Add direct lookup by chunk for NearbyPlayers
+                 --this.nonEmptyLists;
+             }
+         }
+@@ -188,7 +204,7 @@ public final class NearbyPlayers {
+             final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
+ 
+             NearbyPlayers.this.byChunk.computeIfAbsent(chunkKey, (final long keyInMap) -> {
+-                return new TrackedChunk();
++                return new TrackedChunk(keyInMap, NearbyPlayers.this); // Moonrise - Add direct lookup by chunk for NearbyPlayers
+             }).addPlayer(parameter, this.type);
+         }
+ 

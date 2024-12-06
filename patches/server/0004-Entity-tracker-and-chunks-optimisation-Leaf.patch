@@ -1,0 +1,968 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Oleksandr Semenishchev <sashasemenishchev@gmail.com>
+Date: Fri, 6 Dec 2024 22:30:13 +0100
+Subject: [PATCH] Entity tracker and chunks optimisation (Leaf)
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java b/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java
+index a152adf327b6debe4c87c7efbde2f83dd207e596..6cea51d5751f6fdac1dbe560e6497064dece49c0 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java
+@@ -7,6 +7,7 @@ import ca.spottedleaf.moonrise.common.util.ChunkSystem;
+ import ca.spottedleaf.moonrise.patches.chunk_tick_iteration.ChunkTickConstants;
+ import it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap;
+ import it.unimi.dsi.fastutil.objects.Reference2ReferenceOpenHashMap;
++import me.mrfunny.purpurleaf.data.ChunkData;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.server.level.ServerPlayer;
+@@ -204,7 +205,9 @@ public final class NearbyPlayers {
+             final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
+ 
+             NearbyPlayers.this.byChunk.computeIfAbsent(chunkKey, (final long keyInMap) -> {
+-                return new TrackedChunk(keyInMap, NearbyPlayers.this); // Moonrise - Add direct lookup by chunk for NearbyPlayers
++                TrackedChunk trackedChunk = new TrackedChunk(keyInMap, NearbyPlayers.this); // Moonrise - Add direct lookup by chunk for NearbyPlayers
++                NearbyPlayers.this.world.moonrise$requestChunkData(chunkKey).setNearbyPlayers(trackedChunk); // PurpurLeaf start - set nearbyPlayers info
++                return trackedChunk;
+             }).addPlayer(parameter, this.type);
+         }
+ 
+@@ -221,6 +224,12 @@ public final class NearbyPlayers {
+ 
+             if (chunk.isEmpty()) {
+                 NearbyPlayers.this.byChunk.remove(chunkKey);
++                // PurpurLeaf start - no nearby players
++                ChunkData chunkData = NearbyPlayers.this.world.moonrise$releaseChunkData(chunkKey);
++                if(chunkData != null) {
++                    chunkData.setNearbyPlayers(null);
++                }
++                // PurpurLeaf end
+             }
+         }
+     }
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/entity/ChunkSystemEntity.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/entity/ChunkSystemEntity.java
+index 2c279854bdf214538380fa354e4298ec4bd9ac4e..365de8138399ca996ca9d90d1991ec89214a3bf2 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/entity/ChunkSystemEntity.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/entity/ChunkSystemEntity.java
+@@ -36,4 +36,9 @@ public interface ChunkSystemEntity {
+     public void moonrise$setUpdatingSectionStatus(final boolean to);
+ 
+     public boolean moonrise$hasAnyPlayerPassengers();
++
++    // PurpurLeaf start - chunk data ref data
++    me.mrfunny.purpurleaf.data.ChunkData moonrise$getChunkData();
++    void moonrise$setChunkData(final @javax.annotation.Nullable me.mrfunny.purpurleaf.data.ChunkData chunkData);
++    // PurpurLeaf end
+ }
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/ChunkSystemLevel.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/ChunkSystemLevel.java
+index efcd9057f008f0b9cf0d22b2b21d1851205841e5..408656a29fb021c595fcef91def8ab632657345a 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/ChunkSystemLevel.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/ChunkSystemLevel.java
+@@ -19,4 +19,16 @@ public interface ChunkSystemLevel {
+ 
+     public void moonrise$midTickTasks();
+ 
++    // PurpurLeaf start - define chunk data methods
++    boolean moonrise$areChunksLoaded(final int fromX, final int fromZ, final int toX, final int toZ);
++
++    me.mrfunny.purpurleaf.data.ChunkData moonrise$getChunkData(final long chunkKey);
++
++    me.mrfunny.purpurleaf.data.ChunkData moonrise$getChunkData(final int chunkX, final int chunkZ);
++
++    me.mrfunny.purpurleaf.data.ChunkData moonrise$requestChunkData(final long chunkKey);
++
++    @javax.annotation.Nullable
++    me.mrfunny.purpurleaf.data.ChunkData moonrise$releaseChunkData(final long chunkKey);
++    // PurpurLeaf end
+ }
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+index 5c7f2471a0b15ac2e714527296ad2aa7291999eb..8723b62081091ec4d9d5469a3df75137690fed6f 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+@@ -35,6 +35,7 @@ public final class ChunkEntitySlices {
+     public final int chunkX;
+     public final int chunkZ;
+     public final Level world;
++    public final me.mrfunny.purpurleaf.data.ChunkData chunkData;
+ 
+     private final EntityCollectionBySection allEntities;
+     private final EntityCollectionBySection hardCollidingEntities;
+@@ -55,7 +56,7 @@ public final class ChunkEntitySlices {
+     }
+ 
+     public ChunkEntitySlices(final Level world, final int chunkX, final int chunkZ, final FullChunkStatus status,
+-                             final int minSection, final int maxSection) { // inclusive, inclusive
++                             me.mrfunny.purpurleaf.data.ChunkData chunkData, final int minSection, final int maxSection) { // PurpurLeaf - add holder data // inclusive, inclusive
+         this.minSection = minSection;
+         this.maxSection = maxSection;
+         this.chunkX = chunkX;
+@@ -68,6 +69,7 @@ public final class ChunkEntitySlices {
+         this.entitiesByType = new Reference2ObjectOpenHashMap<>();
+ 
+         this.status = status;
++        this.chunkData = chunkData;
+     }
+ 
+     public static List<Entity> readEntities(final ServerLevel world, final CompoundTag compoundTag) {
+@@ -262,6 +264,7 @@ public final class ChunkEntitySlices {
+             return false;
+         }
+         ((ChunkSystemEntity)entity).moonrise$setChunkStatus(this.status);
++        entity.moonrise$setChunkData(this.chunkData); // PurpurLeaf - set reference of current chunk data to entity
+         final int sectionIndex = chunkSection - this.minSection;
+ 
+         this.allEntities.addEntity(entity, sectionIndex);
+@@ -295,6 +298,7 @@ public final class ChunkEntitySlices {
+             return false;
+         }
+         ((ChunkSystemEntity)entity).moonrise$setChunkStatus(null);
++        entity.moonrise$setChunkData(null); // PurpurLeaf - reset chunk data
+         final int sectionIndex = chunkSection - this.minSection;
+ 
+         this.allEntities.removeEntity(entity, sectionIndex);
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/client/ClientEntityLookup.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/client/ClientEntityLookup.java
+index edcde00206d068bd79175fea33efa05b0e8c1562..78f38f895cec4fb0d1e0a5b366feeeed82675771 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/client/ClientEntityLookup.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/client/ClientEntityLookup.java
+@@ -45,7 +45,9 @@ public final class ClientEntityLookup extends EntityLookup {
+ 
+         final ChunkEntitySlices ret = new ChunkEntitySlices(
+                 this.world, chunkX, chunkZ,
+-                ticking ? FullChunkStatus.ENTITY_TICKING : FullChunkStatus.FULL, WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world)
++                ticking ? FullChunkStatus.ENTITY_TICKING : FullChunkStatus.FULL,
++                null, // PurpurLeaf
++                WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world)
+         );
+ 
+         // note: not handled by superclass
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/dfl/DefaultEntityLookup.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/dfl/DefaultEntityLookup.java
+index 465469e44346c50f30f3abd6b44f4173ccfcf248..a248c9be7a1207567224b453e1edf553a779e1e9 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/dfl/DefaultEntityLookup.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/dfl/DefaultEntityLookup.java
+@@ -32,6 +32,7 @@ public final class DefaultEntityLookup extends EntityLookup {
+     protected ChunkEntitySlices createEntityChunk(final int chunkX, final int chunkZ, final boolean transientChunk) {
+         final ChunkEntitySlices ret = new ChunkEntitySlices(
+                 this.world, chunkX, chunkZ, FullChunkStatus.FULL,
++                null, // PurpurLeaf
+                 WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world)
+         );
+ 
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/server/ServerEntityLookup.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/server/ServerEntityLookup.java
+index dacf2b2988ce603879fe525a3418ac77f8a663f7..d1a4573bb5d507b9af97a69941b03d9b53aab419 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/server/ServerEntityLookup.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/server/ServerEntityLookup.java
+@@ -17,7 +17,7 @@ public final class ServerEntityLookup extends EntityLookup {
+ 
+     private final ServerLevel serverWorld;
+     public final ReferenceList<Entity> trackerEntities = new ReferenceList<>(EMPTY_ENTITY_ARRAY); // Moonrise - entity tracker
+-    public final ReferenceList<Entity> trackerUnloadedEntities = new ReferenceList<>(EMPTY_ENTITY_ARRAY); // Moonrise - entity tracker
++//    public final ReferenceList<Entity> trackerUnloadedEntities = new ReferenceList<>(EMPTY_ENTITY_ARRAY); PurpurLeaf - Don't process unloads // Moonrise - entity tracker
+ 
+     public ServerEntityLookup(final ServerLevel world, final LevelCallback<Entity> worldCallback) {
+         super(world, worldCallback);
+@@ -77,14 +77,14 @@ public final class ServerEntityLookup extends EntityLookup {
+         if (entity instanceof ServerPlayer player) {
+             ((ChunkSystemServerLevel)this.serverWorld).moonrise$getNearbyPlayers().removePlayer(player);
+         }
+-        this.trackerUnloadedEntities.remove(entity); // Moonrise - entity tracker
++//        this.trackerUnloadedEntities.remove(entity); PurpurLeaf - Don't process unloads // Moonrise - entity tracker
+     }
+ 
+     @Override
+     protected void entityStartLoaded(final Entity entity) {
+         // Moonrise start - entity tracker
+         this.trackerEntities.add(entity);
+-        this.trackerUnloadedEntities.remove(entity);
++//        this.trackerUnloadedEntities.remove(entity); PurpurLeaf - Don't process unloads
+         // Moonrise end - entity tracker
+     }
+ 
+@@ -92,7 +92,7 @@ public final class ServerEntityLookup extends EntityLookup {
+     protected void entityEndLoaded(final Entity entity) {
+         // Moonrise start - entity tracker
+         this.trackerEntities.remove(entity);
+-        this.trackerUnloadedEntities.add(entity);
++        // this.trackerUnloadedEntities.add(entity); PurpurLeaf - Don't process unloads
+         // Moonrise end - entity tracker
+     }
+ 
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+index 45eda96fd8a1acb87dbb69ce5495fec7e451416f..9140c07769f97d458a28a0d9bcb3566501017a56 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+@@ -31,6 +31,7 @@ import it.unimi.dsi.fastutil.objects.Reference2ObjectLinkedOpenHashMap;
+ import it.unimi.dsi.fastutil.objects.Reference2ObjectMap;
+ import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
+ import it.unimi.dsi.fastutil.objects.ReferenceLinkedOpenHashSet;
++import me.mrfunny.purpurleaf.data.ChunkData;
+ import net.minecraft.nbt.CompoundTag;
+ import net.minecraft.server.level.ChunkHolder;
+ import net.minecraft.server.level.ChunkLevel;
+@@ -89,6 +90,7 @@ public final class NewChunkHolder {
+             if (this.entityChunk == null) {
+                 ret = this.entityChunk = new ChunkEntitySlices(
+                     this.world, this.chunkX, this.chunkZ, this.getChunkStatus(),
++                    this.holderData, // PurpurLeaf
+                     WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world)
+                 );
+ 
+@@ -640,6 +642,7 @@ public final class NewChunkHolder {
+     }
+ 
+     public final ChunkHolder vanillaChunkHolder;
++    public final me.mrfunny.purpurleaf.data.ChunkData holderData;  // PurpurLeaf - add holder
+ 
+     public NewChunkHolder(final ServerLevel world, final int chunkX, final int chunkZ, final ChunkTaskScheduler scheduler) {
+         this.world = world;
+@@ -651,6 +654,7 @@ public final class NewChunkHolder {
+                 world.getLightEngine(), null, world.getChunkSource().chunkMap
+         );
+         ((ChunkSystemChunkHolder)this.vanillaChunkHolder).moonrise$setRealChunkHolder(this);
++        this.holderData = world.moonrise$requestChunkData(CoordinateUtils.getChunkKey(chunkX, chunkZ)); // PurpurLeaf
+     }
+ 
+     public ChunkAccess getCurrentChunk() {
+@@ -752,6 +756,7 @@ public final class NewChunkHolder {
+ 
+     void markUnloaded() {
+         this.unloaded = true;
++        this.world.moonrise$releaseChunkData(CoordinateUtils.getChunkKey(this.chunkX, this.chunkZ)); // PurpurLeaf
+     }
+ 
+     private boolean inUnloadQueue = false;
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/entity_tracker/EntityTrackerTrackedEntity.java b/src/main/java/ca/spottedleaf/moonrise/patches/entity_tracker/EntityTrackerTrackedEntity.java
+index 1fa07bef57d82c6d5242aaaf66011f0913515231..d31d78de4ccef2443045ba282fa0a227571c27db 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/entity_tracker/EntityTrackerTrackedEntity.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/entity_tracker/EntityTrackerTrackedEntity.java
+@@ -10,4 +10,5 @@ public interface EntityTrackerTrackedEntity {
+ 
+     public void moonrise$clearPlayers();
+ 
++    boolean moonrise$hasPlayers(); // PurpurLeaf
+ }
+diff --git a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..906164316fcd651e2d1e07214dad8675762a0c0f
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+@@ -0,0 +1,4 @@
++package me.mrfunny.purpurleaf;
++
++public class PurpurLeafAPI {
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/data/ChunkData.java b/src/main/java/me/mrfunny/purpurleaf/data/ChunkData.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b1c529a0131c9b62db7a936ff34543c1cab6922a
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/data/ChunkData.java
+@@ -0,0 +1,26 @@
++package me.mrfunny.purpurleaf.data;
++
++import ca.spottedleaf.moonrise.common.misc.NearbyPlayers;
++
++import java.util.concurrent.atomic.AtomicInteger;
++
++public class ChunkData {
++    private final AtomicInteger refCount = new AtomicInteger(0);
++    private NearbyPlayers.TrackedChunk nearbyPlayers;
++
++    public int increaseRef() {
++        return refCount.incrementAndGet();
++    }
++
++    public int decreaseRef() {
++        return refCount.decrementAndGet();
++    }
++
++    public NearbyPlayers.TrackedChunk getNearbyPlayers() {
++        return nearbyPlayers;
++    }
++
++    public void setNearbyPlayers(final NearbyPlayers.TrackedChunk nearbyPlayers) {
++        this.nearbyPlayers = nearbyPlayers;
++    }
++}
+diff --git a/src/main/java/net/minecraft/server/level/ChunkMap.java b/src/main/java/net/minecraft/server/level/ChunkMap.java
+index 1883abec14e05f8eb2e865446b4d81091b1aa5e0..6e60d88c8917c8a02029e7fd6bc45282fe7fe3e9 100644
+--- a/src/main/java/net/minecraft/server/level/ChunkMap.java
++++ b/src/main/java/net/minecraft/server/level/ChunkMap.java
+@@ -931,10 +931,14 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+             if (tracker == null) {
+                 continue;
+             }
+-            ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerTrackedEntity)tracker).moonrise$tick(nearbyPlayers.getChunk(entity.chunkPosition()));
+-            tracker.serverEntity.sendChanges();
++            // PurpurLeaf start - optimisation
++            tracker.moonrise$tick(entity.moonrise$getChunkData().getNearbyPlayers()); // directly know the reference without hashmap lookup
++            if(tracker.moonrise$hasPlayers() || entity.moonrise$getChunkStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
++                tracker.serverEntity.sendChanges(); // send changes if there are changes to send
++            }
++            // PurpurLeaf end
+         }
+-
++        /* PurpurLeaf start - don't process unloads
+         // process unloads
+         final ca.spottedleaf.moonrise.common.list.ReferenceList<net.minecraft.world.entity.Entity> unloadedEntities = entityLookup.trackerUnloadedEntities;
+         final Entity[] unloadedEntitiesRaw = java.util.Arrays.copyOf(unloadedEntities.getRawDataUnchecked(), unloadedEntities.size());
+@@ -947,6 +951,7 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+             }
+             ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerTrackedEntity)tracker).moonrise$clearPlayers();
+         }
++        PurpurLeaf end */
+     }
+     // Paper end - optimise entity tracker
+ 
+@@ -1148,6 +1153,13 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+             }
+         }
+ 
++        // PurpurLeaf start
++        @Override
++        public final boolean moonrise$hasPlayers() {
++            return !this.seenBy.isEmpty();
++        }
++        // PurpurLeaf end
++
+         @Override
+         public final void moonrise$removeNonTickThreadPlayers() {
+             boolean foundToRemove = false;
+diff --git a/src/main/java/net/minecraft/world/entity/Entity.java b/src/main/java/net/minecraft/world/entity/Entity.java
+index 7aadcaa1785c6560eb1ce2f1179225facca47d84..5c00b440c7e7c759f806e0304166bceb5922cb5d 100644
+--- a/src/main/java/net/minecraft/world/entity/Entity.java
++++ b/src/main/java/net/minecraft/world/entity/Entity.java
+@@ -547,6 +547,20 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+         this.trackedEntity = trackedEntity;
+     }
+ 
++    // PurpurLeaf start - chunk data getters and setters
++    @javax.annotation.Nullable
++    private me.mrfunny.purpurleaf.data.ChunkData chunkData;
++    @Override
++    public final me.mrfunny.purpurleaf.data.ChunkData moonrise$getChunkData() {
++        return this.chunkData;
++    }
++
++    @Override
++    public final void moonrise$setChunkData(@javax.annotation.Nullable me.mrfunny.purpurleaf.data.ChunkData chunkData) {
++        this.chunkData = chunkData;
++    }
++    // PurpurLeaf end
++
+     private static void collectIndirectPassengers(final List<Entity> into, final List<Entity> from) {
+         for (final Entity passenger : from) {
+             into.add(passenger);
+diff --git a/src/main/java/net/minecraft/world/level/Level.java b/src/main/java/net/minecraft/world/level/Level.java
+index 5057d9d433ba002a22d22adfaf7323b2cfaee9af..8e0b19009ee4a5650316e12971fde9a6253031fa 100644
+--- a/src/main/java/net/minecraft/world/level/Level.java
++++ b/src/main/java/net/minecraft/world/level/Level.java
+@@ -116,9 +116,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     public static final int TICKS_PER_DAY = 24000;
+     public static final int MAX_ENTITY_SPAWN_Y = 20000000;
+     public static final int MIN_ENTITY_SPAWN_Y = -20000000;
+-    public final List<TickingBlockEntity> blockEntityTickers = Lists.newArrayList(); // Paper - public
++    public final List<TickingBlockEntity> blockEntityTickers = new org.leaf.util.HashedReferenceList<>(Lists.newArrayList()); // Leaf - Lithium - hashed list // Paper - public
+     protected final NeighborUpdater neighborUpdater;
+-    private final List<TickingBlockEntity> pendingBlockEntityTickers = Lists.newArrayList();
++    private final List<TickingBlockEntity> pendingBlockEntityTickers = new org.leaf.util.HashedReferenceList<>(Lists.newArrayList()); // Leaf - Lithium - hashed list
+     private boolean tickingBlockEntities;
+     public final Thread thread;
+     private final boolean isDebug;
+@@ -233,6 +233,53 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         return (CraftServer) Bukkit.getServer();
+     }
+ 
++    // PurpurLeaf start - nearby players chunk data
++    private final ca.spottedleaf.concurrentutil.map.ConcurrentLong2ReferenceChainedHashTable<me.mrfunny.purpurleaf.data.ChunkData> chunkData = new ca.spottedleaf.concurrentutil.map.ConcurrentLong2ReferenceChainedHashTable<>();
++    @Override
++    public boolean moonrise$areChunksLoaded(final int fromX, final int fromZ, final int toX, final int toZ) {
++        ChunkSource chunkSource = this.getChunkSource();
++
++        for (int currZ = fromZ; currZ <= toZ; currZ++) {
++            for (int currX = fromX; currX <= toX; currX++) {
++                if (!chunkSource.hasChunk(currX, currZ)) {
++                    return false;
++                }
++            }
++        }
++
++        return true;
++    }
++
++    @Override
++    public final me.mrfunny.purpurleaf.data.ChunkData moonrise$getChunkData(final long chunkKey) {
++        return this.chunkData.get(chunkKey);
++    }
++
++    @Override
++    public final me.mrfunny.purpurleaf.data.ChunkData moonrise$getChunkData(final int chunkX, final int chunkZ) {
++        return this.chunkData.get(ChunkPos.asLong(chunkX, chunkZ));
++    }
++
++    @Override
++    public final me.mrfunny.purpurleaf.data.ChunkData moonrise$requestChunkData(final long chunkKey) {
++        return this.chunkData.compute(chunkKey, (keyInMap, valueInMap) -> {
++            if (valueInMap == null) {
++                me.mrfunny.purpurleaf.data.ChunkData ret = new me.mrfunny.purpurleaf.data.ChunkData();
++                ret.increaseRef();
++                return ret;
++            } else {
++                valueInMap.increaseRef();
++                return valueInMap;
++            }
++        });
++    }
++    @Nullable
++    @Override
++    public final me.mrfunny.purpurleaf.data.ChunkData moonrise$releaseChunkData(long chunkKey) {
++        return this.chunkData.compute(chunkKey, (keyInMap, chunkData) -> chunkData.decreaseRef() == 0 ? null : chunkData);
++    }
++    // PurpurLeaf end
++
+     // Paper start - Use getChunkIfLoadedImmediately
+     @Override
+     public boolean hasChunk(int chunkX, int chunkZ) {
+diff --git a/src/main/java/net/minecraft/world/level/block/PoweredRailBlock.java b/src/main/java/net/minecraft/world/level/block/PoweredRailBlock.java
+index 8fc65c32a3c6e6842a76b36f45e1b1c23abbc480..6c8fe3576d3ecb915c105b5388ba9aaf44146f46 100644
+--- a/src/main/java/net/minecraft/world/level/block/PoweredRailBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/PoweredRailBlock.java
+@@ -29,7 +29,7 @@ public class PoweredRailBlock extends BaseRailBlock {
+         this.registerDefaultState((BlockState) ((BlockState) ((BlockState) ((BlockState) this.stateDefinition.any()).setValue(PoweredRailBlock.SHAPE, RailShape.NORTH_SOUTH)).setValue(PoweredRailBlock.POWERED, false)).setValue(PoweredRailBlock.WATERLOGGED, false));
+     }
+ 
+-    protected boolean findPoweredRailSignal(Level world, BlockPos pos, BlockState state, boolean flag, int distance) {
++    public boolean findPoweredRailSignal(Level world, BlockPos pos, BlockState state, boolean flag, int distance) { // Leaf - public
+         if (distance >= world.purpurConfig.railActivationRange) { // Purpur
+             return false;
+         } else {
+diff --git a/src/main/java/org/bukkit/craftbukkit/generator/CustomChunkGenerator.java b/src/main/java/org/bukkit/craftbukkit/generator/CustomChunkGenerator.java
+index cab7ca4218e5903b6a5e518af55457b9a1b5111c..953863686dcfa64f4d285794248880de05dbc1b6 100644
+--- a/src/main/java/org/bukkit/craftbukkit/generator/CustomChunkGenerator.java
++++ b/src/main/java/org/bukkit/craftbukkit/generator/CustomChunkGenerator.java
+@@ -179,7 +179,7 @@ public class CustomChunkGenerator extends InternalChunkGenerator {
+             return;
+         }
+ 
+-        Preconditions.checkArgument(data instanceof OldCraftChunkData, "Plugins must use createChunkData(World) rather than implementing ChunkData: %s", data);
++        Preconditions.checkArgument(data instanceof OldCraftChunkData, "Plugins must use createChunkData(World) rather than implementing me.mrfunny.purpurleaf.data.ChunkData: %s", data);
+         OldCraftChunkData craftData = (OldCraftChunkData) data;
+         LevelChunkSection[] sections = craftData.getRawChunkData();
+ 
+diff --git a/src/main/java/org/leaf/util/HashedReferenceList.java b/src/main/java/org/leaf/util/HashedReferenceList.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2c74d6ee9f1c06b2b80a02da13a7bca19905b2e
+--- /dev/null
++++ b/src/main/java/org/leaf/util/HashedReferenceList.java
+@@ -0,0 +1,277 @@
++package org.leaf.util;
++
++import it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap;
++import it.unimi.dsi.fastutil.objects.ReferenceArrayList;
++import it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.*;
++
++/**
++ * Wraps a {@link List} with a hash table which provides O(1) lookups for {@link Collection#contains(Object)}. The type
++ * contained by this list must use reference-equality semantics.
++ */
++@SuppressWarnings("SuspiciousMethodCalls")
++public class HashedReferenceList<T> implements List<T> {
++    private final ReferenceArrayList<T> list;
++    private final Reference2IntOpenHashMap<T> counter;
++
++    public HashedReferenceList(List<T> list) {
++        this.list = new ReferenceArrayList<>();
++        this.list.addAll(list);
++
++        this.counter = new Reference2IntOpenHashMap<>();
++        this.counter.defaultReturnValue(0);
++
++        for (T obj : this.list) {
++            this.counter.addTo(obj, 1);
++        }
++    }
++
++    @Override
++    public int size() {
++        return this.list.size();
++    }
++
++    @Override
++    public boolean isEmpty() {
++        return this.list.isEmpty();
++    }
++
++    @Override
++    public boolean contains(Object o) {
++        return this.counter.containsKey(o);
++    }
++
++    @Override
++    public Iterator<T> iterator() {
++        return this.listIterator();
++    }
++
++    @Override
++    public Object[] toArray() {
++        return this.list.toArray();
++    }
++
++    @SuppressWarnings("SuspiciousToArrayCall")
++    @Override
++    public <T1> T1[] toArray(T1 @NotNull [] a) {
++        return this.list.toArray(a);
++    }
++
++    @Override
++    public boolean add(T t) {
++        this.trackReferenceAdded(t);
++
++        return this.list.add(t);
++    }
++
++    @Override
++    public boolean remove(Object o) {
++        this.trackReferenceRemoved(o);
++
++        return this.list.remove(o);
++    }
++
++    @Override
++    public boolean containsAll(Collection<?> c) {
++        for (Object obj : c) {
++            if (!this.counter.containsKey(obj)) {
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++    @Override
++    public boolean addAll(Collection<? extends T> c) {
++        for (T obj : c) {
++            this.trackReferenceAdded(obj);
++        }
++
++        return this.list.addAll(c);
++    }
++
++    @Override
++    public boolean addAll(int index, Collection<? extends T> c) {
++        for (T obj : c) {
++            this.trackReferenceAdded(obj);
++        }
++
++        return this.list.addAll(index, c);
++    }
++
++    @Override
++    public boolean removeAll(@NotNull Collection<?> c) {
++        if (this.size() >= 2 && c.size() > 4 && c instanceof List) {
++            //HashReferenceList uses reference equality, so using ReferenceOpenHashSet is fine
++            c = new ReferenceOpenHashSet<>(c);
++        }
++        this.counter.keySet().removeAll(c);
++        return this.list.removeAll(c);
++    }
++
++    @Override
++    public boolean retainAll(@NotNull Collection<?> c) {
++        this.counter.keySet().retainAll(c);
++        return this.list.retainAll(c);
++    }
++
++    @Override
++    public void clear() {
++        this.counter.clear();
++        this.list.clear();
++    }
++
++    @Override
++    public T get(int index) {
++        return this.list.get(index);
++    }
++
++    @Override
++    public T set(int index, T element) {
++        T prev = this.list.set(index, element);
++
++        if (prev != element) {
++            if (prev != null) {
++                this.trackReferenceRemoved(prev);
++            }
++
++            this.trackReferenceAdded(element);
++        }
++
++        return prev;
++    }
++
++    @Override
++    public void add(int index, T element) {
++        this.trackReferenceAdded(element);
++
++        this.list.add(index, element);
++    }
++
++    @Override
++    public T remove(int index) {
++        T prev = this.list.remove(index);
++
++        if (prev != null) {
++            this.trackReferenceRemoved(prev);
++        }
++
++        return prev;
++    }
++
++    @Override
++    public int indexOf(Object o) {
++        return this.list.indexOf(o);
++    }
++
++    @Override
++    public int lastIndexOf(Object o) {
++        return this.list.lastIndexOf(o);
++    }
++
++    @Override
++    public ListIterator<T> listIterator() {
++        return this.listIterator(0);
++    }
++
++    @Override
++    public ListIterator<T> listIterator(int index) {
++        return new ListIterator<>() {
++            private final ListIterator<T> inner = HashedReferenceList.this.list.listIterator(index);
++
++            @Override
++            public boolean hasNext() {
++                return this.inner.hasNext();
++            }
++
++            @Override
++            public T next() {
++                return this.inner.next();
++            }
++
++            @Override
++            public boolean hasPrevious() {
++                return this.inner.hasPrevious();
++            }
++
++            @Override
++            public T previous() {
++                return this.inner.previous();
++            }
++
++            @Override
++            public int nextIndex() {
++                return this.inner.nextIndex();
++            }
++
++            @Override
++            public int previousIndex() {
++                return this.inner.previousIndex();
++            }
++
++            @Override
++            public void remove() {
++                int last = this.previousIndex();
++
++                if (last == -1) {
++                    throw new NoSuchElementException();
++                }
++
++                T prev = HashedReferenceList.this.get(last);
++
++                if (prev != null) {
++                    HashedReferenceList.this.trackReferenceRemoved(prev);
++                }
++
++                this.inner.remove();
++            }
++
++            @Override
++            public void set(T t) {
++                int last = this.previousIndex();
++
++                if (last == -1) {
++                    throw new NoSuchElementException();
++                }
++
++                T prev = HashedReferenceList.this.get(last);
++
++                if (prev != t) {
++                    if (prev != null) {
++                        HashedReferenceList.this.trackReferenceRemoved(prev);
++                    }
++
++                    HashedReferenceList.this.trackReferenceAdded(t);
++                }
++
++                this.inner.remove();
++            }
++
++            @Override
++            public void add(T t) {
++                HashedReferenceList.this.trackReferenceAdded(t);
++
++                this.inner.add(t);
++            }
++        };
++    }
++
++    @Override
++    public List<T> subList(int fromIndex, int toIndex) {
++        return this.list.subList(fromIndex, toIndex);
++    }
++
++    private void trackReferenceAdded(T t) {
++        this.counter.addTo(t, 1);
++    }
++
++    @SuppressWarnings("unchecked")
++    private void trackReferenceRemoved(Object o) {
++        if (this.counter.addTo((T) o, -1) <= 1) {
++            this.counter.removeInt(o);
++        }
++    }
++}
+diff --git a/src/main/java/org/leaf/util/biome/PositionalBiomeGetter.java b/src/main/java/org/leaf/util/biome/PositionalBiomeGetter.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..75d17d71e1aab275c9ff4a140d97b4f01ddb58a3
+--- /dev/null
++++ b/src/main/java/org/leaf/util/biome/PositionalBiomeGetter.java
+@@ -0,0 +1,36 @@
++package org.leaf.util.biome;
++
++import net.minecraft.core.BlockPos;
++import net.minecraft.core.Holder;
++import net.minecraft.world.level.biome.Biome;
++
++import java.util.function.Function;
++import java.util.function.Supplier;
++
++public class PositionalBiomeGetter implements Supplier<Holder<Biome>> {
++    private final Function<BlockPos, Holder<Biome>> biomeGetter;
++    private final BlockPos.MutableBlockPos pos;
++    private int nextX, nextY, nextZ;
++    private volatile Holder<Biome> curBiome;
++
++    public PositionalBiomeGetter(Function<BlockPos, Holder<Biome>> biomeGetter, BlockPos.MutableBlockPos pos) {
++        this.biomeGetter = biomeGetter;
++        this.pos = pos;
++    }
++
++    public void update(int nextX, int nextY, int nextZ) {
++        this.nextX = nextX;
++        this.nextY = nextY;
++        this.nextZ = nextZ;
++        this.curBiome = null;
++    }
++
++    @Override
++    public Holder<Biome> get() {
++        Holder<Biome> biome = curBiome;
++        if (biome == null) {
++            curBiome = biome = biomeGetter.apply(pos.set(nextX, nextY, nextZ));
++        }
++        return biome;
++    }
++}
+diff --git a/src/main/java/org/leaf/util/cache/CachedOrNewBitsGetter.java b/src/main/java/org/leaf/util/cache/CachedOrNewBitsGetter.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d1a1519a783fdb20f92256ac49d636f322d86a52
+--- /dev/null
++++ b/src/main/java/org/leaf/util/cache/CachedOrNewBitsGetter.java
+@@ -0,0 +1,21 @@
++package org.leaf.util.cache;
++
++import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
++
++import java.util.BitSet;
++import java.util.function.IntFunction;
++
++public class CachedOrNewBitsGetter {
++    private static final IntFunction<BitSet> bitSetConstructor = BitSet::new;
++
++    public static ThreadLocal<Int2ObjectOpenHashMap<BitSet>> BITSETS = ThreadLocal.withInitial(Int2ObjectOpenHashMap::new);
++
++    private CachedOrNewBitsGetter() {
++    }
++
++    public static BitSet getCachedOrNewBitSet(int bits) {
++        final BitSet bitSet = BITSETS.get().computeIfAbsent(bits, bitSetConstructor);
++        bitSet.clear();
++        return bitSet;
++    }
++}
+diff --git a/src/main/java/org/leaf/util/cache/IterateOutwardsCache.java b/src/main/java/org/leaf/util/cache/IterateOutwardsCache.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..2f356ee34ec9438ecb2424b408698622d559985e
+--- /dev/null
++++ b/src/main/java/org/leaf/util/cache/IterateOutwardsCache.java
+@@ -0,0 +1,72 @@
++package org.leaf.util.cache;
++
++import it.unimi.dsi.fastutil.longs.LongArrayList;
++import it.unimi.dsi.fastutil.longs.LongList;
++import net.minecraft.core.BlockPos;
++
++import java.util.Iterator;
++import java.util.Random;
++import java.util.concurrent.ConcurrentHashMap;
++
++/**
++ * @author 2No2Name, original implemenation by SuperCoder7979 and Gegy1000
++ */
++public class IterateOutwardsCache {
++    //POS_ZERO must not be replaced with BlockPos.ORIGIN, otherwise iterateOutwards at BlockPos.ORIGIN will not use the cache
++    public static final BlockPos POS_ZERO = new BlockPos(0,0,0);
++
++
++    private final ConcurrentHashMap<Long, LongArrayList> table;
++    private final int capacity;
++    private final Random random;
++
++    public IterateOutwardsCache(int capacity) {
++        this.capacity = capacity;
++        this.table = new ConcurrentHashMap<>(31);
++        this.random = new Random();
++    }
++
++    private void fillPositionsWithIterateOutwards(LongList entry, int xRange, int yRange, int zRange) {
++        // Add all positions to the cached list
++        for (BlockPos pos : BlockPos.withinManhattan(POS_ZERO, xRange, yRange, zRange)) {
++            entry.add(pos.asLong());
++        }
++    }
++
++    public LongList getOrCompute(int xRange, int yRange, int zRange) {
++        long key = BlockPos.asLong(xRange, yRange, zRange);
++
++        LongArrayList entry = this.table.get(key);
++        if (entry != null) {
++            return entry;
++        }
++
++        // Cache miss: compute and store
++        entry = new LongArrayList(128);
++
++        this.fillPositionsWithIterateOutwards(entry, xRange, yRange, zRange);
++
++        //decrease the array size, as of now it won't be modified anymore anyways
++        entry.trim();
++
++        //this might overwrite an entry as the same entry could have been computed and added during this thread's computation
++        //we do not use computeIfAbsent, as it can delay other threads for too long
++        Object previousEntry = this.table.put(key, entry);
++
++
++        if (previousEntry == null && this.table.size() > this.capacity) {
++            //prevent a memory leak by randomly removing about 1/8th of the elements when the exceed the desired capacity is exceeded
++            final Iterator<Long> iterator = this.table.keySet().iterator();
++            //prevent an unlikely infinite loop caused by another thread filling the table concurrently using counting
++            for (int i = -this.capacity; iterator.hasNext() && i < 5; i++) {
++                Long key2 = iterator.next();
++                //random is not threadsafe, but it doesn't matter here, because we don't need quality random numbers
++                if (this.random.nextInt(8) == 0 && key2 != key) {
++                    iterator.remove();
++                }
++            }
++        }
++
++        return entry;
++    }
++}
+diff --git a/src/main/java/org/leaf/util/cache/LongList2BlockPosMutableIterable.java b/src/main/java/org/leaf/util/cache/LongList2BlockPosMutableIterable.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e3ae1a22818e2cd26b793ad3c9c49047fc0bb056
+--- /dev/null
++++ b/src/main/java/org/leaf/util/cache/LongList2BlockPosMutableIterable.java
+@@ -0,0 +1,47 @@
++package org.leaf.util.cache;
++
++import it.unimi.dsi.fastutil.longs.LongIterator;
++import it.unimi.dsi.fastutil.longs.LongList;
++import net.minecraft.core.BlockPos;
++
++import java.util.Iterator;
++
++/**
++ * @author 2No2Name
++ */
++public class LongList2BlockPosMutableIterable implements Iterable<BlockPos> {
++
++    private final LongList positions;
++    private final int xOffset, yOffset, zOffset;
++
++    public LongList2BlockPosMutableIterable(BlockPos offset, LongList posList) {
++        this.xOffset = offset.getX();
++        this.yOffset = offset.getY();
++        this.zOffset = offset.getZ();
++        this.positions = posList;
++    }
++
++    @Override
++    public Iterator<BlockPos> iterator() {
++        return new Iterator<BlockPos>() {
++
++            private final LongIterator it = LongList2BlockPosMutableIterable.this.positions.iterator();
++            private final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
++
++            @Override
++            public boolean hasNext() {
++                return it.hasNext();
++            }
++
++            @Override
++            public BlockPos next() {
++                long nextPos = this.it.nextLong();
++                return this.pos.set(
++                        LongList2BlockPosMutableIterable.this.xOffset + BlockPos.getX(nextPos),
++                        LongList2BlockPosMutableIterable.this.yOffset + BlockPos.getY(nextPos),
++                        LongList2BlockPosMutableIterable.this.zOffset + BlockPos.getZ(nextPos));
++            }
++        };
++    }
++
++}
+diff --git a/src/main/java/org/leaf/util/fluid/FluidUtil.java b/src/main/java/org/leaf/util/fluid/FluidUtil.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f5ed206575bf6be588bcdbbd86d1b41d503e866b
+--- /dev/null
++++ b/src/main/java/org/leaf/util/fluid/FluidUtil.java
+@@ -0,0 +1,30 @@
++package org.leaf.util.fluid;
++
++import net.minecraft.tags.BlockTags;
++import net.minecraft.world.level.block.Block;
++import net.minecraft.world.level.block.Blocks;
++import net.minecraft.world.level.block.DoorBlock;
++import net.minecraft.world.level.block.state.BlockState;
++
++public class FluidUtil {
++
++    public static boolean canHoldFluidInternal(Block block, BlockState state) {
++        if (block instanceof DoorBlock ||
++                state.is(BlockTags.SIGNS) ||
++                block == Blocks.LADDER ||
++                block == Blocks.SUGAR_CANE ||
++                block == Blocks.BUBBLE_COLUMN) {
++            return false;
++        }
++
++        if (block == Blocks.NETHER_PORTAL ||
++                block == Blocks.END_PORTAL ||
++                block == Blocks.END_GATEWAY ||
++                block == Blocks.STRUCTURE_VOID) {
++            return false;
++        }
++
++        // Same with !state.blocksMotion()
++        return block == Blocks.COBWEB || block == Blocks.BAMBOO_SAPLING || !state.isSolid();
++    }
++}
