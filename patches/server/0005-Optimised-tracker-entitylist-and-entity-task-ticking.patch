@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Oleksandr Semenishchev <sashasemenishchev@gmail.com>
+Date: Sat, 7 Dec 2024 01:31:07 +0100
+Subject: [PATCH] Optimised tracker entitylist and entity task ticking
+ (sparklypaper)
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+index 8723b62081091ec4d9d5469a3df75137690fed6f..d17a5ab4343dbfca5445174f1954520dea2e6dfb 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+@@ -3,6 +3,7 @@ package ca.spottedleaf.moonrise.patches.chunk_system.level.entity;
+ import ca.spottedleaf.moonrise.common.list.EntityList;
+ import ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity;
+ import com.google.common.collect.ImmutableList;
++import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+ import it.unimi.dsi.fastutil.objects.Reference2ObjectMap;
+ import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
+ import net.minecraft.nbt.CompoundTag;
+@@ -417,6 +418,13 @@ public final class ChunkEntitySlices {
+ 
+         private E[] storage;
+         private int size;
++        // PurpurLeaf start - optimise lookups
++        private Int2IntOpenHashMap entityToIndex = null;
++        private void setupIndexMap() {
++            this.entityToIndex = new Int2IntOpenHashMap(2, 0.8F);
++            this.entityToIndex.defaultReturnValue(Integer.MIN_VALUE);
++        }
++        // PurpurLeaf end
+ 
+         public BasicEntityList() {
+             this(0);
+@@ -437,6 +445,7 @@ public final class ChunkEntitySlices {
+         private void resize() {
+             if (this.storage == EMPTY) {
+                 this.storage = (E[])new Entity[DEFAULT_CAPACITY];
++                this.setupIndexMap(); // PurpurLeaf
+             } else {
+                 this.storage = Arrays.copyOf(this.storage, this.storage.length * 2);
+             }
+@@ -450,6 +459,7 @@ public final class ChunkEntitySlices {
+             } else {
+                 this.storage[idx] = entity;
+             }
++            this.entityToIndex.put(entity.getId(), idx); // PurpurLeaf
+         }
+ 
+         public int indexOf(final E entity) {
+@@ -464,26 +474,29 @@ public final class ChunkEntitySlices {
+             return -1;
+         }
+ 
+-        public boolean remove(final E entity) {
+-            final int idx = this.indexOf(entity);
+-            if (idx == -1) {
+-                return false;
++        // PurpurLeaf start - optimise remove and contains
++        public boolean remove(E entity) {
++            if (this.entityToIndex == null) return false;
++            int index = this.entityToIndex.remove(entity.getId());
++            if (index == Integer.MIN_VALUE) return false;
++            int endIndex = --this.size;
++            E end = this.storage[endIndex];
++            if (index != endIndex) {
++                this.entityToIndex.put(end.getId(), index);
+             }
+ 
+-            final int size = --this.size;
+-            final E[] storage = this.storage;
+-            if (idx != size) {
+-                System.arraycopy(storage, idx + 1, storage, idx, size - idx);
+-            }
+-
+-            storage[size] = null;
+-
++            this.storage[index] = end;
++            this.storage[endIndex] = null;
+             return true;
+         }
+ 
+         public boolean has(final E entity) {
+-            return this.indexOf(entity) != -1;
++            if(this.entityToIndex == null) {
++                return this.indexOf(entity) != -1;
++            }
++            return this.entityToIndex.containsKey(entity.getId());
+         }
++        // PurpurLeaf end
+     }
+ 
+     private static final class EntityCollectionBySection {
+diff --git a/src/main/java/io/papermc/paper/threadedregions/EntityScheduler.java b/src/main/java/io/papermc/paper/threadedregions/EntityScheduler.java
+index c03608fec96b51e1867f43d8f42e5aefb1520e46..15b21fa3907db1b77ed5b5d1050a37f42d27d5ab 100644
+--- a/src/main/java/io/papermc/paper/threadedregions/EntityScheduler.java
++++ b/src/main/java/io/papermc/paper/threadedregions/EntityScheduler.java
+@@ -36,6 +36,7 @@ public final class EntityScheduler {
+      * The Entity. Note that it is the CraftEntity, since only that class properly tracks world transfers.
+      */
+     public final CraftEntity entity;
++    public final net.minecraft.server.MinecraftServer server; // SparklyPaper - skip EntityScheduler's executeTick checks if there isn't any tasks to be run
+ 
+     private static final record ScheduledTask(Consumer<? extends Entity> run, Consumer<? extends Entity> retired) {}
+ 
+@@ -46,7 +47,8 @@ public final class EntityScheduler {
+ 
+     private final ArrayDeque<ScheduledTask> currentlyExecuting = new ArrayDeque<>();
+ 
+-    public EntityScheduler(final CraftEntity entity) {
++    public EntityScheduler(final net.minecraft.server.MinecraftServer server, final CraftEntity entity) { // SparklyPaper - skip EntityScheduler's executeTick checks if there isn't any tasks to be run
++        this.server = Validate.notNull(server);
+         this.entity = Validate.notNull(entity);
+     }
+ 
+@@ -61,14 +63,16 @@ public final class EntityScheduler {
+      * @throws IllegalStateException If the scheduler is already retired.
+      */
+     public void retire() {
++        final Entity thisEntity = this.entity.getHandleRaw(); // SparklyPaper - skip EntityScheduler's executeTick checks if there isn't any tasks to be run
+         synchronized (this.stateLock) {
+             if (this.tickCount == RETIRED_TICK_COUNT) {
+                 throw new IllegalStateException("Already retired");
+             }
+             this.tickCount = RETIRED_TICK_COUNT;
++            this.server.entitiesWithScheduledTasks.remove(thisEntity); // SparklyPaper - skip EntityScheduler's executeTick checks if there isn't any tasks to be run
+         }
+ 
+-        final Entity thisEntity = this.entity.getHandleRaw();
++        // final Entity thisEntity = this.entity.getHandleRaw(); // SparklyPaper - skip EntityScheduler's executeTick checks if there isn't any tasks to be run (moved up)
+ 
+         // correctly handle and order retiring while running executeTick
+         for (int i = 0, len = this.currentlyExecuting.size(); i < len; ++i) {
+@@ -124,6 +128,7 @@ public final class EntityScheduler {
+             if (this.tickCount == RETIRED_TICK_COUNT) {
+                 return false;
+             }
++            this.server.entitiesWithScheduledTasks.add(this.entity.getHandleRaw()); // SparklyPaper - skip EntityScheduler's executeTick checks if there isn't any tasks to be run
+             this.oneTimeDelayed.computeIfAbsent(this.tickCount + Math.max(1L, delay), (final long keyInMap) -> {
+                 return new ArrayList<>();
+             }).add(task);
+@@ -143,6 +148,13 @@ public final class EntityScheduler {
+         TickThread.ensureTickThread(thisEntity, "May not tick entity scheduler asynchronously");
+         final List<ScheduledTask> toRun;
+         synchronized (this.stateLock) {
++            // SparklyPaper start - skip EntityScheduler's executeTick checks if there isn't any tasks to be run
++            // Do we *really* have scheduled tasks tho?
++            if (this.currentlyExecuting.isEmpty() && this.oneTimeDelayed.isEmpty()) { // Check if we have any pending tasks and, if not, skip!
++                this.server.entitiesWithScheduledTasks.remove(thisEntity); // We don't! Bye bye!!
++                return;
++            }
++            // SparklyPaper end
+             if (this.tickCount == RETIRED_TICK_COUNT) {
+                 throw new IllegalStateException("Ticking retired scheduler");
+             }
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index d78cb68c3a53b277aa26186062efc716c8f80f36..904f130dbc63a7974f196b1311d7c941b313459e 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -326,6 +326,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+     public volatile boolean abnormalExit = false; // Paper
+     public static final long SERVER_INIT = System.nanoTime(); // Paper - Lag compensation
+     public gg.pufferfish.pufferfish.util.AsyncExecutor mobSpawnExecutor = new gg.pufferfish.pufferfish.util.AsyncExecutor("MobSpawning"); // Pufferfish - optimize mob spawning
++    public final Set<Entity> entitiesWithScheduledTasks = java.util.concurrent.ConcurrentHashMap.newKeySet(); // SparklyPaper - skip EntityScheduler's executeTick checks if there isn't any tasks to be run (concurrent because plugins may schedule tasks async)
+ 
+     public static <S extends MinecraftServer> S spin(Function<Thread, S> serverFactory) {
+         AtomicReference<S> atomicreference = new AtomicReference();
+@@ -1771,6 +1772,18 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         //MinecraftTimings.bukkitSchedulerTimer.stopTiming(); // Spigot // Paper // Purpur
+         // Paper start - Folia scheduler API
+         ((io.papermc.paper.threadedregions.scheduler.FoliaGlobalRegionScheduler) Bukkit.getGlobalRegionScheduler()).tick();
++        // SparklyPaper - skip EntityScheduler's executeTick checks if there isn't any tasks to be run
++        for (final Entity entity : entitiesWithScheduledTasks) {
++            if (entity.isRemoved()) {
++                continue;
++            }
++
++            final org.bukkit.craftbukkit.entity.CraftEntity bukkit = entity.getBukkitEntityRaw();
++            if (bukkit != null) {
++                bukkit.taskScheduler.executeTick();
++            }
++        }
++        /*
+         getAllLevels().forEach(level -> {
+             for (final Entity entity : level.moonrise$getEntityLookup().getAllCopy()) { // Paper - rewrite chunk system
+                 if (entity.isRemoved()) {
+@@ -1782,6 +1795,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+                 }
+             }
+         });
++        */
++        // SparklyPaper end
+         // Paper end - Folia scheduler API
+         io.papermc.paper.adventure.providers.ClickCallbackProviderImpl.CALLBACK_MANAGER.handleQueue(this.tickCount); // Paper
+         //this.profiler.push("commandFunctions"); // Purpur
