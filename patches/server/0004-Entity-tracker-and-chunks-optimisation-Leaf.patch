@@ -352,7 +352,7 @@ index 7aadcaa1785c6560eb1ce2f1179225facca47d84..5c00b440c7e7c759f806e0304166bceb
          for (final Entity passenger : from) {
              into.add(passenger);
 diff --git a/src/main/java/net/minecraft/world/level/Level.java b/src/main/java/net/minecraft/world/level/Level.java
-index 5057d9d433ba002a22d22adfaf7323b2cfaee9af..8e0b19009ee4a5650316e12971fde9a6253031fa 100644
+index 5057d9d433ba002a22d22adfaf7323b2cfaee9af..7a9e492c254d285ec1a15311ed220678764056f3 100644
 --- a/src/main/java/net/minecraft/world/level/Level.java
 +++ b/src/main/java/net/minecraft/world/level/Level.java
 @@ -116,9 +116,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
@@ -367,7 +367,7 @@ index 5057d9d433ba002a22d22adfaf7323b2cfaee9af..8e0b19009ee4a5650316e12971fde9a6
      private boolean tickingBlockEntities;
      public final Thread thread;
      private final boolean isDebug;
-@@ -233,6 +233,53 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -233,6 +233,50 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          return (CraftServer) Bukkit.getServer();
      }
  
@@ -400,15 +400,12 @@ index 5057d9d433ba002a22d22adfaf7323b2cfaee9af..8e0b19009ee4a5650316e12971fde9a6
 +
 +    @Override
 +    public final me.mrfunny.purpurleaf.data.ChunkData moonrise$requestChunkData(final long chunkKey) {
-+        return this.chunkData.compute(chunkKey, (keyInMap, valueInMap) -> {
-+            if (valueInMap == null) {
-+                me.mrfunny.purpurleaf.data.ChunkData ret = new me.mrfunny.purpurleaf.data.ChunkData();
-+                ret.increaseRef();
-+                return ret;
-+            } else {
-+                valueInMap.increaseRef();
-+                return valueInMap;
++        return this.chunkData.compute(chunkKey, (keyInMap, val) -> {
++            if (val == null) {
++                val = new me.mrfunny.purpurleaf.data.ChunkData();
 +            }
++            val.increaseRef();
++            return val;
 +        });
 +    }
 +    @Nullable

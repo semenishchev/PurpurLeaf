@@ -1,0 +1,323 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SashaSemenishchev <sashasemenishchev@gmail.com>
+Date: Sat, 7 Dec 2024 18:25:17 +0100
+Subject: [PATCH] Config file
+
+
+diff --git a/src/main/java/me/mrfunny/purpurleaf/command/PurpurleafCommand.java b/src/main/java/me/mrfunny/purpurleaf/command/PurpurleafCommand.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e8d7888eb9c70517b6c236e0f1b1f136804d67e0
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/command/PurpurleafCommand.java
+@@ -0,0 +1,22 @@
++package me.mrfunny.purpurleaf.command;
++
++import com.mojang.brigadier.CommandDispatcher;
++import com.mojang.brigadier.builder.LiteralArgumentBuilder;
++import com.mojang.brigadier.context.CommandContext;
++import com.mojang.brigadier.tree.LiteralCommandNode;
++import net.minecraft.commands.CommandSource;
++import net.minecraft.commands.CommandSourceStack;
++import net.minecraft.commands.Commands;
++import org.bukkit.Bukkit;
++
++public class PurpurleafCommand {
++    public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
++        var build = Commands.literal("purpurleaf")
++            .then(Commands.literal("version").executes(PurpurleafCommand::version));
++        dispatcher.register(build);
++    }
++
++    private static int version(CommandContext<CommandSourceStack> ctx) {
++        return Bukkit.dispatchCommand(ctx.getSource().getBukkitSender(), "version") ? 1 : 0;
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/config/Configurable.java b/src/main/java/me/mrfunny/purpurleaf/config/Configurable.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c05d523ba05a0890195d18da4dda1ebd3bbae4aa
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/config/Configurable.java
+@@ -0,0 +1,15 @@
++package me.mrfunny.purpurleaf.config;
++
++import java.lang.annotation.Retention;
++import java.lang.annotation.RetentionPolicy;
++
++@Retention(RetentionPolicy.RUNTIME)
++public @interface Configurable {
++    String fullPath() default "_";
++
++    String label() default "_";
++
++    String comment() default "";
++
++    String rec() default "";
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..452440e12170dd388426fb87f089a2bd527d0e13
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
+@@ -0,0 +1,205 @@
++package me.mrfunny.purpurleaf.config;
++
++import com.google.common.base.Throwables;
++import org.bukkit.configuration.InvalidConfigurationException;
++import org.bukkit.configuration.file.YamlConfiguration;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++import java.io.File;
++import java.io.IOException;
++import java.lang.reflect.Field;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.lang.reflect.Modifier;
++import java.util.List;
++
++/**
++ * Inspired by Purpur's {@link org.purpurmc.purpur.PurpurConfig}.
++ * Static fields are global settings which can't be applied to a specific world
++ * Non-static fields hold settings per world
++ */
++public class PurpurleafConfig {
++    private static final String HEADER = "The main configuration file for PurpurLeaf\n";
++    private static File CONFIG_FILE;
++    private static YamlConfiguration config;
++    private static YamlConfiguration oldConfig;
++    private static final int version = 1;
++    @NotNull
++    private final String worldName; // Name of the world for per-world options
++    @Configurable(
++        fullPath = "asynchronous.tracker",
++        rec = "true",
++        label = "enabled",
++        comment = "Enables Asynchronous Entity Tracker."
++    )
++    public static boolean enableAsynchronousTracker = false;
++
++    @Configurable(
++        fullPath = "asynchronous.tracker",
++        label = "threads",
++        comment = "Configure maximum amount of threads for entity tracking."
++    )
++    public static int trackerThreads = 1;
++
++    public PurpurleafConfig(@NotNull String worldName) {
++        this.worldName = worldName;
++        readConfig(PurpurleafConfig.class, this);
++    }
++
++    public static void init(File configFile) {
++        CONFIG_FILE = configFile;
++        config = new YamlConfiguration();
++        oldConfig = new YamlConfiguration();
++
++        try {
++            oldConfig.load(CONFIG_FILE);
++        } catch (IOException ignored) {
++        } catch (InvalidConfigurationException e) {
++            throw Throwables.propagate(e);
++        }
++
++        config.options().header(HEADER);
++        config.options().copyDefaults(true);
++        readConfig(PurpurleafConfig.class, null);
++    }
++
++    public static void readConfig(Class<?> clazz, PurpurleafConfig instance) {
++        for (Field field : clazz.getDeclaredFields()) {
++            PathData path = getPathData(field);
++            if(path == null) continue;
++            Configurable annotation = path.annotation;
++            if (Modifier.isStatic(field.getModifiers())) {
++                String fqpath = "%s.%s".formatted(path.fullPath, path.label);
++                tryRead(field, annotation, fqpath, null, true);
++            } else if (!Modifier.isStatic(field.getModifiers()) && instance != null) {
++                String fqpath = "world-settings.%s.%s.%s".formatted(instance.worldName, path.fullPath, path.label);
++                Object value = tryRead(field, annotation, fqpath, instance, false);
++                if (value == null) {
++                    fqpath = "world-settings.default.%s.%s".formatted(path.fullPath, path.label);
++                    tryRead(field, annotation, fqpath, instance, true);
++                }
++            }
++        }
++
++        for (Method method : clazz.getDeclaredMethods()) {
++            if (Modifier.isStatic(method.getModifiers())
++                && Modifier.isPrivate(method.getModifiers())
++                && method.getParameterCount() == 0
++                && method.getReturnType() == void.class
++                && !method.getName().startsWith("lambda")) {
++                method.setAccessible(true);
++
++                try {
++                    method.invoke(null);
++                } catch (IllegalAccessException | InvocationTargetException e) {
++                    throw new RuntimeException(e);
++                }
++            }
++        }
++
++        save();
++    }
++
++    private static Object tryRead(Field field, Configurable annotation, String path, Object instance, boolean setIfMissing) {
++        Object value = null;
++        boolean contains = config.contains(path);
++        if (!contains && setIfMissing) {
++            String comment = annotation.comment();
++            String recommendation = annotation.rec();
++            boolean containsInOld = oldConfig.contains(path);
++
++            try {
++                if (!containsInOld) {
++                    value = field.get(instance);
++                } else {
++                    field.set(instance, value = oldConfig.get(path));
++                }
++            } catch (IllegalAccessException e) {
++                throw new RuntimeException(e);
++            }
++
++            config.set(path, value);
++            boolean commentExists = !comment.isBlank();
++            if (!recommendation.isBlank()) {
++                if (commentExists) {
++                    comment = comment + "\n";
++                }
++
++                comment = comment + "Recommended value: " + recommendation;
++            }
++
++            if (commentExists) {
++                config.setComments(path, List.of(comment.split("\n")));
++            }
++        } else if (contains) {
++            try {
++                field.set(instance, value = config.get(path));
++            } catch (IllegalAccessException e) {
++                throw new RuntimeException(e);
++            }
++        }
++
++        return value;
++    }
++
++    public static void save() {
++        try {
++            config.save(CONFIG_FILE);
++        } catch (IOException ignored) {}
++    }
++
++    public void saveState() {
++        for (Field field : PurpurleafConfig.class.getDeclaredFields()) {
++            PathData path = getPathData(field);
++            if(path == null) continue;
++            Object value;
++            try {
++                value = field.get(this);
++            } catch (IllegalAccessException e) {
++                throw new RuntimeException(e);
++            }
++
++            String fqpath;
++            if (Modifier.isStatic(field.getModifiers())) {
++                fqpath = "%s.%s".formatted(path.fullPath, path.label);
++            } else {
++                fqpath = "world-settings.%s.%s.%s".formatted(this.worldName, path.fullPath, path.label);
++                if (!config.contains(fqpath)) {
++                    fqpath = "world-settings.default.%s.%s".formatted(path.fullPath, path.label);
++                }
++            }
++
++            config.set(fqpath, value);
++        }
++
++        save();
++    }
++
++    private static void ensureDefault(String key, Object defaultValue) {
++        if (config.contains(key)) return;
++        config.set(key, defaultValue);
++    }
++
++    private static int getInt(String key, int defaultValue, String... comment) {
++        return getInt(key, null, defaultValue);
++    }
++
++    private static int getInt(String key, @Nullable String oldKey, int defaultValue) {
++        ensureDefault(key, defaultValue);
++        return config.getInt(key, defaultValue);
++    }
++
++    private static PathData getPathData(Field field) {
++        if (!Modifier.isPublic(field.getModifiers())) return null;
++        Configurable annotation = field.getAnnotation(Configurable.class);
++        if(annotation == null) return null;
++        return new PathData(
++            annotation,
++            annotation.fullPath(),
++            annotation.label().equals("_") ? field.getName().replace("_", "-") : annotation.label()
++        );
++    }
++
++    public record PathData(Configurable annotation, String fullPath, String label) {}
++}
+diff --git a/src/main/java/net/minecraft/commands/Commands.java b/src/main/java/net/minecraft/commands/Commands.java
+index ac93dcca5576b9d4e7d15305f5d0dbaf940b7b1d..a97a8e60a3e403137450b5fbf86fb1db8d13ebd1 100644
+--- a/src/main/java/net/minecraft/commands/Commands.java
++++ b/src/main/java/net/minecraft/commands/Commands.java
+@@ -258,6 +258,7 @@ public class Commands {
+             org.purpurmc.purpur.command.CompassCommand.register(this.dispatcher); // Purpur
+             org.purpurmc.purpur.command.RamBarCommand.register(this.dispatcher); // Purpur
+             org.purpurmc.purpur.command.RamCommand.register(this.dispatcher); // Purpur
++            me.mrfunny.purpurleaf.command.PurpurleafCommand.register(this.dispatcher); // PurpurLeaf
+         }
+ 
+         if (environment.includeIntegrated) {
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+index 6e6f4dffceb0032153c5be119303c5809629cfcc..fe0b299e3510298cfaaa3f3f807751b97f27e47b 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -226,6 +226,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+         // Purpur start
+         try {
+             org.purpurmc.purpur.PurpurConfig.init((java.io.File) options.valueOf("purpur-settings"));
++            me.mrfunny.purpurleaf.config.PurpurleafConfig.init((java.io.File) options.valueOf("purpurleaf-settings"));
+         } catch (Exception e) {
+             DedicatedServer.LOGGER.error("Unable to load server configuration", e);
+             return false;
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index 8854e3adca98214697fdfa7f1296e2d66b5afa48..e9ec9a2f784a05edb24142dbed94ba060ca1716a 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -1048,7 +1048,8 @@ public final class CraftServer implements Server {
+     @Override
+     public void reload() {
+         // Paper start - lifecycle events
+-        if (io.papermc.paper.plugin.lifecycle.event.LifecycleEventRunner.INSTANCE.blocksPluginReloading()) {
++        if (true) { // PurpurLeaf - ABSOLUTELY NO RELOADS
++            Bukkit.getLogger().warning("Reloads are disabled. There is no way to enable them. Use your plugins' commands to reload configs, use HotSwapping to develop a plugin, or just restart the server."); // PurpurLeaf - inform the user
+             throw new IllegalStateException(org.bukkit.command.defaults.ReloadCommand.RELOADING_DISABLED_MESSAGE);
+         }
+         // Paper end - lifecycle events
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index 068aa459b4d1dfbbbd80dc0ae5c43b8202474477..2017cb0025c26fc01f5293e9a68ddbf0d77b5885 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -190,6 +190,14 @@ public class Main {
+                         .describedAs("Yml file");
+                 // Purpur end
+ 
++                // Purpurleaf start - add config
++                acceptsAll(asList("purpurleaf", "purpurleaf-settings"), "File for purpurleaf settings")
++                    .withRequiredArg()
++                    .ofType(File.class)
++                    .defaultsTo(new File("purpurleaf.yml"))
++                    .describedAs("Yml file");
++                // Purpurleaf end
++
+                 // Paper start
+                 acceptsAll(asList("server-name"), "Name of the server")
+                         .withRequiredArg()

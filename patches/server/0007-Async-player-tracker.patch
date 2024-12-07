@@ -1,0 +1,545 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SashaSemenishchev <sashasemenishchev@gmail.com>
+Date: Sat, 7 Dec 2024 21:07:48 +0100
+Subject: [PATCH] Async player tracker
+
+This implementation is *inspired* from Leaf's implementation, but the implementation I want to use is too different to just include the Leaf's patch and edit it.
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java b/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
+index 11b7f15755dde766140c29bedca456c80d53293f..d6839972afc2277663829dafa464d559211330a7 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
+@@ -90,7 +90,10 @@ public class TickThread extends Thread {
+     }
+ 
+     public static boolean isTickThread() {
+-        return Thread.currentThread() instanceof TickThread;
++        // PurpurLeaf start - virtual thread as tick thread support
++        Thread thread = Thread.currentThread();
++        return thread instanceof TickThread || (thread.isVirtual() && thread.getName().startsWith("tick"));
++        // PurpurLeaf end
+     }
+ 
+     public static boolean isShutdownThread() {
+diff --git a/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java b/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
+index 7ce9ebba8ce304d1f3f21d4f15ee5f3560d7700b..a2c737e0498cd49848ea60cfa95a1ad2b11becb7 100644
+--- a/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
++++ b/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
+@@ -4,6 +4,7 @@ import co.aikar.timings.TimedEventExecutor;
+ import com.destroystokyo.paper.event.server.ServerExceptionEvent;
+ import com.destroystokyo.paper.exception.ServerEventException;
+ import com.google.common.collect.Sets;
++import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import org.bukkit.Server;
+ import org.bukkit.Warning;
+ import org.bukkit.event.Event;
+@@ -36,11 +37,15 @@ class PaperEventManager {
+ 
+     // SimplePluginManager
+     public void callEvent(@NotNull Event event) {
+-        if (event.isAsynchronous() && this.server.isPrimaryThread()) {
+-            throw new IllegalStateException(event.getEventName() + " may only be triggered asynchronously.");
+-        } else if (!event.isAsynchronous() && !this.server.isPrimaryThread() && !this.server.isStopping()) {
+-            throw new IllegalStateException(event.getEventName() + " may only be triggered synchronously.");
++        // PurpurLeaf - throw exception only if async is disabled
++        if(!PurpurleafConfig.enableAsynchronousTracker) {
++            if (event.isAsynchronous() && this.server.isPrimaryThread()) {
++                throw new IllegalStateException(event.getEventName() + " may only be triggered asynchronously.");
++            } else if (!event.isAsynchronous() && !this.server.isPrimaryThread() && !this.server.isStopping()) {
++                throw new IllegalStateException(event.getEventName() + " may only be triggered synchronously.");
++            }
+         }
++        // PurpurLeaf end
+ 
+         HandlerList handlers = event.getHandlers();
+         RegisteredListener[] listeners = handlers.getRegisteredListeners();
+diff --git a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+index 906164316fcd651e2d1e07214dad8675762a0c0f..bd34ff521b332f028a7e7a637394f4e83dbb3219 100644
+--- a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
++++ b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+@@ -1,4 +1,43 @@
+ package me.mrfunny.purpurleaf;
+ 
++import ca.spottedleaf.moonrise.common.util.TickThread;
++import com.google.common.util.concurrent.ThreadFactoryBuilder;
++import me.mrfunny.purpurleaf.config.PurpurleafConfig;
++import me.mrfunny.purpurleaf.util.TickThreadFactory;
++import me.mrfunny.purpurleaf.util.VirtualTickThreadFactory;
++
++import java.util.concurrent.*;
++
+ public class PurpurLeafAPI {
++    private static ExecutorService executor;
++    private static ScheduledExecutorService scheduledExecutor;
++    public static void init() {
++        // todo: count needed threads from counting async features in the config
++        executor = PurpurleafConfig.virtualThreads
++            ? Executors.newThreadPerTaskExecutor(new VirtualTickThreadFactory())
++            : new ThreadPoolExecutor(
++                2,
++                2,
++                0L,
++                TimeUnit.MILLISECONDS,
++                new LinkedBlockingQueue<>(),
++                new ThreadFactoryBuilder()
++                    .setDaemon(true)
++                    .setThreadFactory(new TickThreadFactory())
++                    .build()
++            );
++        scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
++    }
++
++    public static ExecutorService getExecutor() {
++        return executor;
++    }
++
++    public static ScheduledExecutorService getScheduledExecutor() {
++        return scheduledExecutor;
++    }
++
++    public static void scheduleOnMainExecutor(Runnable runnable, long delay, TimeUnit timeUnit) {
++        scheduledExecutor.schedule(() -> executor.execute(runnable), delay, timeUnit);
++    }
+ }
+diff --git a/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
+index 452440e12170dd388426fb87f089a2bd527d0e13..e98540aaa35a280f6bb57a2af0cd38fd99f18571 100644
+--- a/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
++++ b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
+@@ -27,6 +27,14 @@ public class PurpurleafConfig {
+     private static final int version = 1;
+     @NotNull
+     private final String worldName; // Name of the world for per-world options
++
++    @Configurable(
++        fullPath = "asynchronous.general",
++        label = "virtual-threads",
++        comment = "Should we use virtual threads for the tasks? This setting will impact general CPU performance"
++    )
++    public static boolean virtualThreads = false;
++
+     @Configurable(
+         fullPath = "asynchronous.tracker",
+         rec = "true",
+diff --git a/src/main/java/me/mrfunny/purpurleaf/util/ConcurrentPlayerMap.java b/src/main/java/me/mrfunny/purpurleaf/util/ConcurrentPlayerMap.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..79457bfe78495280c5cd25f029105a2c5d006d16
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/util/ConcurrentPlayerMap.java
+@@ -0,0 +1,45 @@
++package me.mrfunny.purpurleaf.util;
++
++import net.minecraft.server.level.ServerPlayer;
++
++import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
++
++public class ConcurrentPlayerMap implements IPlayerMap {
++    private final ConcurrentHashMap<ServerPlayer, Boolean> players = new ConcurrentHashMap<>();
++
++    @Override
++    public Set<ServerPlayer> getAllPlayers() {
++        return this.players.keySet();
++    }
++
++    @Override
++    public void addPlayer(ServerPlayer player, boolean inactive) {
++        this.players.put(player, inactive);
++    }
++
++    @Override
++    public void removePlayer(ServerPlayer player) {
++        this.players.remove(player);
++    }
++
++    @Override
++    public void ignorePlayer(ServerPlayer player) {
++        this.players.replace(player, true);
++    }
++
++    @Override
++    public void unIgnorePlayer(ServerPlayer player) {
++        this.players.replace(player, false);
++    }
++
++    @Override
++    public boolean ignoredOrUnknown(ServerPlayer player) {
++        return this.players.getOrDefault(player, true);
++    }
++
++    @Override
++    public boolean ignored(ServerPlayer player) {
++        return this.players.get(player);
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/util/IPlayerMap.java b/src/main/java/me/mrfunny/purpurleaf/util/IPlayerMap.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..91599614cd70a3a0d277561d6dedfdd534dee4b9
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/util/IPlayerMap.java
+@@ -0,0 +1,21 @@
++package me.mrfunny.purpurleaf.util;
++
++import net.minecraft.server.level.ServerPlayer;
++
++import java.util.Set;
++
++public interface IPlayerMap {
++    Set<ServerPlayer> getAllPlayers();
++
++    void addPlayer(ServerPlayer var1, boolean var2);
++
++    void removePlayer(ServerPlayer var1);
++
++    void ignorePlayer(ServerPlayer var1);
++
++    void unIgnorePlayer(ServerPlayer var1);
++
++    boolean ignoredOrUnknown(ServerPlayer var1);
++
++    boolean ignored(ServerPlayer var1);
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/util/TickThreadFactory.java b/src/main/java/me/mrfunny/purpurleaf/util/TickThreadFactory.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d8cea702cba10c146d55bf680346c13ff50406c2
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/util/TickThreadFactory.java
+@@ -0,0 +1,15 @@
++package me.mrfunny.purpurleaf.util;
++
++import ca.spottedleaf.moonrise.common.util.TickThread;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.concurrent.ThreadFactory;
++import java.util.concurrent.atomic.AtomicInteger;
++
++public class TickThreadFactory implements ThreadFactory {
++    private static final AtomicInteger threadNumber = new AtomicInteger(1);
++    @Override
++    public Thread newThread(@NotNull Runnable r) {
++        return new TickThread(r, "tickthread-" + threadNumber.getAndIncrement());
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/util/VirtualTickThreadFactory.java b/src/main/java/me/mrfunny/purpurleaf/util/VirtualTickThreadFactory.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a1cbb35774130b6a8070277da7a766d071b10529
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/util/VirtualTickThreadFactory.java
+@@ -0,0 +1,17 @@
++package me.mrfunny.purpurleaf.util;
++
++import ca.spottedleaf.moonrise.common.util.TickThread;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.concurrent.ThreadFactory;
++import java.util.concurrent.atomic.AtomicInteger;
++
++public class VirtualTickThreadFactory implements ThreadFactory {
++    private static final AtomicInteger threadNumber = new AtomicInteger(1);
++    @Override
++    public Thread newThread(@NotNull Runnable r) {
++        return Thread.ofVirtual()
++            .name("tickvthread-" + threadNumber.getAndIncrement())
++            .unstarted(r);
++    }
++}
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index 904f130dbc63a7974f196b1311d7c941b313459e..109f2114c81f6a665e6ef77fe3a8380dcfc669e9 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -54,6 +54,8 @@ import java.util.stream.Collectors;
+ import java.util.stream.Stream;
+ import javax.annotation.Nullable;
+ import javax.imageio.ImageIO;
++
++import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import net.minecraft.CrashReport;
+ import net.minecraft.CrashReportCategory;
+ import net.minecraft.FileUtil;
+@@ -432,7 +434,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         //}; // Purpur
+         this.random = RandomSource.create();
+         this.port = -1;
+-        this.levels = Maps.newLinkedHashMap();
++        this.levels = PurpurleafConfig.enableAsynchronousTracker ? Maps.newConcurrentMap() : Maps.newLinkedHashMap(); // PurpurLeaf
+         this.running = true;
+         this.ticksUntilAutosave = 6000;
+         this.tickTimesNanos = new long[100];
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+index fe0b299e3510298cfaaa3f3f807751b97f27e47b..4523cce12ac710305cc7760f8fdcf9c8162b6973 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -231,6 +231,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+             DedicatedServer.LOGGER.error("Unable to load server configuration", e);
+             return false;
+         }
++        me.mrfunny.purpurleaf.PurpurLeafAPI.init(); // PurpurLeaf - start the API, threads and so on
+         org.purpurmc.purpur.PurpurConfig.registerCommands();
+         // Purpur end
+         // Paper start - initialize global and world-defaults configuration
+diff --git a/src/main/java/net/minecraft/server/level/ChunkMap.java b/src/main/java/net/minecraft/server/level/ChunkMap.java
+index 6e60d88c8917c8a02029e7fd6bc45282fe7fe3e9..b1475316e4e5475c184c2e601b446928441526db 100644
+--- a/src/main/java/net/minecraft/server/level/ChunkMap.java
++++ b/src/main/java/net/minecraft/server/level/ChunkMap.java
+@@ -1,6 +1,9 @@
+ package net.minecraft.server.level;
+ 
++import ca.spottedleaf.moonrise.common.list.ReferenceList;
++import ca.spottedleaf.moonrise.common.misc.NearbyPlayers;
+ import co.aikar.timings.Timing; // Paper
++import com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent;
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableList.Builder;
+ import com.google.common.collect.Iterables;
+@@ -138,7 +141,7 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+     public final ChunkMap.ChunkDistanceManager distanceManager;
+     public final AtomicInteger tickingGenerated; // Paper - public
+     private final String storageName;
+-    private final PlayerMap playerMap;
++    private final me.mrfunny.purpurleaf.util.IPlayerMap playerMap; // PurpurLeaf - Async/Sync maps
+     public final Int2ObjectMap<ChunkMap.TrackedEntity> entityMap;
+     private final Long2ByteMap chunkTypeCache;
+     private final Long2LongMap chunkSaveCooldowns;
+@@ -182,8 +185,15 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+         // Paper - rewrite chunk system
+         this.toDrop = new LongOpenHashSet();
+         this.tickingGenerated = new AtomicInteger();
+-        this.playerMap = new PlayerMap();
+-        this.entityMap = new Int2ObjectOpenHashMap();
++        // PurpurLeaf start - change map types, also if async
++        boolean asyncTracker = me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousTracker;
++        this.playerMap = asyncTracker
++                         ? new me.mrfunny.purpurleaf.util.ConcurrentPlayerMap()
++                         : new PlayerMap();
++        this.entityMap = asyncTracker
++                         ? it.unimi.dsi.fastutil.ints.Int2ObjectMaps.synchronize(new it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap<>())
++                         : new it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap<>();
++        // PurpurLeaf end
+         this.chunkTypeCache = new Long2ByteOpenHashMap();
+         this.chunkSaveCooldowns = new Long2LongOpenHashMap();
+         // Paper - rewrite chunk system
+@@ -693,55 +703,58 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+         final int finalChunkRange = chunkRange; // Paper for lambda below
+         //double blockRange = (reducedRange) ? Math.pow(chunkRange << 4, 2) : 16384.0D; // Paper - use from event
+         double blockRange = 16384.0D; // Paper
++
++        // PurpurLeaf start - optimise with direct querying
++        NearbyPlayers nearbyPlayers = this.level.moonrise$getNearbyPlayers();
++        ReferenceList<ServerPlayer> playersNearby = nearbyPlayers.getPlayers(chunkcoordintpair, NearbyPlayers.NearbyMapType.SPAWN_RANGE);
+         // Spigot end
+-        if (!this.distanceManager.hasPlayersNearby(chunkcoordintpair.toLong())) {
++        if (playersNearby == null) {
+             return false;
+-        } else {
+-            Iterator iterator = this.playerMap.getAllPlayers().iterator();
+-
+-            ServerPlayer entityplayer;
+-
+-            do {
+-                if (!iterator.hasNext()) {
+-                    return false;
+-                }
+-
+-                entityplayer = (ServerPlayer) iterator.next();
+-                // Paper start - PlayerNaturallySpawnCreaturesEvent
+-                com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent event;
+-                blockRange = 16384.0D;
+-                if (reducedRange) {
+-                    event = entityplayer.playerNaturallySpawnedEvent;
+-                    if (event == null || event.isCancelled()) return false;
+-                    blockRange = (double) ((event.getSpawnRadius() << 4) * (event.getSpawnRadius() << 4));
+-                }
+-                // Paper end - PlayerNaturallySpawnCreaturesEvent
+-            } while (!this.playerIsCloseEnoughForSpawning(entityplayer, chunkcoordintpair, blockRange)); // Spigot
+-
+-            return true;
+         }
++        ServerPlayer[] rawData = playersNearby.getRawDataUnchecked();
++        int itr = 0;
++
++        for (int len = playersNearby.size(); itr < len; itr++) {
++            ServerPlayer player = rawData[itr];
++            // Paper start - PlayerNaturallySpawnCreaturesEvent
++            com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent event;
++            blockRange = 16384.0D;
++            if (reducedRange) {
++                event = player.playerNaturallySpawnedEvent;
++                if (event == null || event.isCancelled()) return false;
++                blockRange = (event.getSpawnRadius() << 4) * (event.getSpawnRadius() << 4);
++            }
++            if(this.playerIsCloseEnoughForSpawning(player, chunkcoordintpair, blockRange)) {
++                return true;
++            }
++        }
++        return false;
++        // PurpurLeaf end
+     }
+ 
+     public List<ServerPlayer> getPlayersCloseForSpawning(ChunkPos pos) {
+-        long i = pos.toLong();
+-
+-        if (!this.distanceManager.hasPlayersNearby(i)) {
++        // PurpurLeaf - optimise by directly querying
++        ReferenceList<ServerPlayer> players = this.level.moonrise$getNearbyPlayers().getPlayers(pos, NearbyPlayers.NearbyMapType.SPAWN_RANGE);
++        if (players == null) {
+             return List.of();
+-        } else {
+-            Builder<ServerPlayer> builder = ImmutableList.builder();
+-            Iterator iterator = this.playerMap.getAllPlayers().iterator();
+-
+-            while (iterator.hasNext()) {
+-                ServerPlayer entityplayer = (ServerPlayer) iterator.next();
+-
+-                if (this.playerIsCloseEnoughForSpawning(entityplayer, pos, 16384.0D)) { // Spigot
+-                    builder.add(entityplayer);
+-                }
++        }
++        List<ServerPlayer> ret = null;
++        ServerPlayer[] raw = players.getRawDataUnchecked();
++        int len = players.size();
++        Objects.checkFromIndexSize(0, len, raw.length);
++
++        for (int i = 0; i < len; i++) {
++            ServerPlayer player = raw[i];
++            if (!this.playerIsCloseEnoughForSpawning(player, pos, 16384.0)) continue;
++            if (ret == null) {
++                ret = new ArrayList<>(len - i);
+             }
+-
+-            return builder.build();
++            ret.add(player);
+         }
++
++        return ret == null ? List.of() : ret;
+     }
++    // PurpurLeaf end
+ 
+     private boolean playerIsCloseEnoughForSpawning(ServerPlayer entityplayer, ChunkPos chunkcoordintpair, double range) { // Spigot
+         if (entityplayer.isSpectator()) {
+@@ -920,12 +933,11 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+ 
+     // Paper start - optimise entity tracker
+     private void newTrackerTick() {
+-        final ca.spottedleaf.moonrise.common.misc.NearbyPlayers nearbyPlayers = ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemServerLevel)this.level).moonrise$getNearbyPlayers();
+-        final ca.spottedleaf.moonrise.patches.chunk_system.level.entity.server.ServerEntityLookup entityLookup = (ca.spottedleaf.moonrise.patches.chunk_system.level.entity.server.ServerEntityLookup)((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemServerLevel)this.level).moonrise$getEntityLookup();;
++        final ca.spottedleaf.moonrise.patches.chunk_system.level.entity.server.ServerEntityLookup entityLookup = (ca.spottedleaf.moonrise.patches.chunk_system.level.entity.server.ServerEntityLookup)((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemServerLevel)this.level).moonrise$getEntityLookup();
+ 
+         final ca.spottedleaf.moonrise.common.list.ReferenceList<net.minecraft.world.entity.Entity> trackerEntities = entityLookup.trackerEntities;
+         final Entity[] trackerEntitiesRaw = trackerEntities.getRawDataUnchecked();
+-        for (int i = 0, len = trackerEntities.size(); i < len; ++i) {
++        for (int i = 0, len = trackerEntities.size(); i < len; i++) {
+             final Entity entity = trackerEntitiesRaw[i];
+             final ChunkMap.TrackedEntity tracker = ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
+             if (tracker == null) {
+@@ -958,6 +970,16 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+     protected void tick() {
+         // Paper start - optimise entity tracker
+         if (true) {
++            // PurpurLeaf start - async tracker
++            if(me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousTracker) {
++                me.mrfunny.purpurleaf.PurpurLeafAPI.getExecutor().execute(() -> {
++                    try {
++                        newTrackerTick();
++                    } catch(Exception ignored) {}
++                });
++                return;
++            }
++            // PurpurLeaf end
+             this.newTrackerTick();
+             return;
+         }
+@@ -1109,7 +1131,7 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+         final Entity entity;
+         private final int range;
+         SectionPos lastSectionPos;
+-        public final Set<ServerPlayerConnection> seenBy = new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>(); // Paper - Perf: optimise map impl
++        public final Set<ServerPlayerConnection> seenBy = me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousTracker ? new java.util.concurrent.CopyOnWriteArraySet<>() : new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>(); // Paper - Perf: optimise map impl
+ 
+         // Paper start - optimise entity tracker
+         private long lastChunkUpdate = -1L;
+diff --git a/src/main/java/net/minecraft/server/level/PlayerMap.java b/src/main/java/net/minecraft/server/level/PlayerMap.java
+index 12f1345ff70388fb217100bfc717ef861785381d..3a3c3a6490a45e46cd8190fa96577ac341279fe6 100644
+--- a/src/main/java/net/minecraft/server/level/PlayerMap.java
++++ b/src/main/java/net/minecraft/server/level/PlayerMap.java
+@@ -2,9 +2,11 @@ package net.minecraft.server.level;
+ 
+ import it.unimi.dsi.fastutil.objects.Object2BooleanMap;
+ import it.unimi.dsi.fastutil.objects.Object2BooleanOpenHashMap;
++import me.mrfunny.purpurleaf.util.IPlayerMap;
++
+ import java.util.Set;
+ 
+-public final class PlayerMap {
++public final class PlayerMap implements IPlayerMap { // PurpurLeaf - make it common with ConcurrentPlayerMap
+     private final Object2BooleanMap<ServerPlayer> players = new Object2BooleanOpenHashMap<>();
+ 
+     public Set<ServerPlayer> getAllPlayers() {
+diff --git a/src/main/java/net/minecraft/server/level/ServerEntity.java b/src/main/java/net/minecraft/server/level/ServerEntity.java
+index dfd09004063a8d8d93357633c8d23b6acff67b73..6633390b3105b054c466a117a7c74507c4613528 100644
+--- a/src/main/java/net/minecraft/server/level/ServerEntity.java
++++ b/src/main/java/net/minecraft/server/level/ServerEntity.java
+@@ -13,6 +13,8 @@ import java.util.Set;
+ import java.util.function.Consumer;
+ import java.util.stream.Stream;
+ import javax.annotation.Nullable;
++
++import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import net.minecraft.core.component.DataComponents;
+ import net.minecraft.network.protocol.Packet;
+ import net.minecraft.network.protocol.game.ClientGamePacketListener;
+@@ -30,6 +32,7 @@ import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
+ import net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket;
+ import net.minecraft.network.protocol.game.VecDeltaCodec;
+ import net.minecraft.network.syncher.SynchedEntityData;
++import net.minecraft.server.MinecraftServer;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.EquipmentSlot;
+ import net.minecraft.world.entity.Leashable;
+@@ -115,6 +118,14 @@ public class ServerEntity {
+             this.broadcastAndSend(new ClientboundSetPassengersPacket(this.entity)); // CraftBukkit
+             ServerEntity.removedPassengers(list, this.lastPassengers).forEach((entity) -> {
+                 if (entity instanceof ServerPlayer entityplayer) {
++                    // PurpurLeaf - async tracker support
++                    if(PurpurleafConfig.enableAsynchronousTracker) {
++                        MinecraftServer
++                            .getServer()
++                            .scheduleOnMain(() -> entityplayer.connection.teleport(entityplayer.getX(), entityplayer.getY(), entityplayer.getZ(), entityplayer.getYRot(), entityplayer.getXRot()));
++                        return;
++                    }
++                    // PurpurLeaf end
+                     entityplayer.connection.teleport(entityplayer.getX(), entityplayer.getY(), entityplayer.getZ(), entityplayer.getYRot(), entityplayer.getXRot());
+                 }
+ 
+diff --git a/src/main/java/net/minecraft/world/entity/ai/attributes/AttributeMap.java b/src/main/java/net/minecraft/world/entity/ai/attributes/AttributeMap.java
+index 00346f83e71193d1378937d51c5e846edcf7e7ba..5ba9cb6e153c23f706f68bc381193b32057c0b83 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/attributes/AttributeMap.java
++++ b/src/main/java/net/minecraft/world/entity/ai/attributes/AttributeMap.java
+@@ -9,6 +9,8 @@ import java.util.Map;
+ import java.util.Set;
+ import java.util.stream.Collectors;
+ import javax.annotation.Nullable;
++
++import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import net.minecraft.Util;
+ import net.minecraft.core.Holder;
+ import net.minecraft.core.registries.BuiltInRegistries;
+@@ -19,9 +21,17 @@ import org.slf4j.Logger;
+ 
+ public class AttributeMap {
+     private static final Logger LOGGER = LogUtils.getLogger();
+-    private final Map<Holder<Attribute>, AttributeInstance> attributes = new Object2ObjectOpenHashMap<>();
+-    private final Set<AttributeInstance> attributesToSync = new ObjectOpenHashSet<>();
+-    private final Set<AttributeInstance> attributesToUpdate = new ObjectOpenHashSet<>();
++    // PurpurLeaf start - if async make maps concurrent
++    private final Map<Holder<Attribute>, AttributeInstance> attributes = PurpurleafConfig.enableAsynchronousTracker
++        ? new java.util.concurrent.ConcurrentHashMap<>()
++        : new Object2ObjectOpenHashMap<>();
++    private final Set<AttributeInstance> attributesToSync = PurpurleafConfig.enableAsynchronousTracker
++        ? java.util.concurrent.ConcurrentHashMap.newKeySet()
++        : new ObjectOpenHashSet<>();
++    private final Set<AttributeInstance> attributesToUpdate = PurpurleafConfig.enableAsynchronousTracker
++        ? java.util.concurrent.ConcurrentHashMap.newKeySet()
++        : new ObjectOpenHashSet<>();
++    // PurpurLeaf end
+     private final AttributeSupplier supplier;
+     private final java.util.function.Function<Holder<Attribute>, AttributeInstance> createInstance; // Pufferfish
+     private final net.minecraft.world.entity.LivingEntity entity; // Purpur

@@ -50,6 +50,19 @@ index 8cde30544e14f8fc2dac32966ae3c21f8cf3a551..b2c19f1c1650fb10d904797691c624f4
  
                  metrics.addCustomChart(new Metrics.SimplePie("minecraft_version", () -> {
                      String minecraftVersion = Bukkit.getVersion();
+diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+index 6d36fc6d8e22d9b68dea3830f6ecc8763184c343..c818edd61a4721bbee6cf10c556dbb2e02ff0268 100644
+--- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
++++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+@@ -52,7 +52,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+         if (build.buildNumber().isEmpty() && build.gitCommit().isEmpty()) {
+             updateMessage = text("You are running a development version without access to version information", color(0xFF5300));
+         } else {
+-            updateMessage = getUpdateStatusMessage("PurpurMC/Purpur", build); // Purpur
++            updateMessage = getUpdateStatusMessage("semenishchev/PurpurLeaf", build); // PurpurLeaf // Purpur
+         }
+         final @Nullable Component history = this.getHistory();
+ 
 diff --git a/src/main/java/com/destroystokyo/paper/console/PaperConsole.java b/src/main/java/com/destroystokyo/paper/console/PaperConsole.java
 index 90b3526479320064378f2cde6c2f2b8e48a59ba6..4fd0b966566e503a2691aa28fb05b6ba20738243 100644
 --- a/src/main/java/com/destroystokyo/paper/console/PaperConsole.java
@@ -64,7 +77,7 @@ index 90b3526479320064378f2cde6c2f2b8e48a59ba6..4fd0b966566e503a2691aa28fb05b6ba
                  .completer(new ConsoleCommandCompleter(this.server))
                  .option(LineReader.Option.COMPLETE_IN_WORD, true);
 diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
-index 3099c21ee589acf6edff5903a23673adf489024f..f1fa4647263408b71b4fb391ecec8df70bd9f123 100644
+index 3099c21ee589acf6edff5903a23673adf489024f..5244a9e31f0a468b9f654cf1f5e2a311733a2204 100644
 --- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
 +++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
 @@ -32,7 +32,7 @@ public record ServerBuildInfoImpl(
@@ -76,6 +89,18 @@ index 3099c21ee589acf6edff5903a23673adf489024f..f1fa4647263408b71b4fb391ecec8df7
  
      private static final String BUILD_DEV = "DEV";
  
+@@ -49,10 +49,7 @@ public record ServerBuildInfoImpl(
+                 .orElse(BRAND_PURPUR_NAME), // Purpur
+             SharedConstants.getCurrentVersion().getId(),
+             SharedConstants.getCurrentVersion().getName(),
+-            getManifestAttribute(manifest, ATTRIBUTE_BUILD_NUMBER)
+-                .map(Integer::parseInt)
+-                .map(OptionalInt::of)
+-                .orElse(OptionalInt.empty()),
++            OptionalInt.empty(), // PurpurLeaf - no build number for now. Will be later
+             getManifestAttribute(manifest, ATTRIBUTE_BUILD_TIME)
+                 .map(Instant::parse)
+                 .orElse(Main.BOOT_TIME),
 diff --git a/src/main/java/org/bukkit/craftbukkit/util/Versioning.java b/src/main/java/org/bukkit/craftbukkit/util/Versioning.java
 index 99597258e8e88cd9e2c901c4ac3ff7faeeabee2b..870b42b0fabcbe3a8fe9df921227237cc36b26d2 100644
 --- a/src/main/java/org/bukkit/craftbukkit/util/Versioning.java
