@@ -1,0 +1,314 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SashaSemenishchev <sashasemenishchev@gmail.com>
+Date: Sun, 8 Dec 2024 23:25:12 +0100
+Subject: [PATCH] Async path processing (Leaf, Petal, SparklyPaper)
+
+
+diff --git a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+index a780d3a43ac67156acc365649c99d851b22178c1..370927c14b2089dc2db9002bda191937ecc5817f 100644
+--- a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
++++ b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+@@ -5,8 +5,11 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
+ import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import me.mrfunny.purpurleaf.util.TickThreadFactory;
+ import me.mrfunny.purpurleaf.util.VirtualTickThreadFactory;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.world.level.pathfinder.Path;
+ 
+ import java.util.concurrent.*;
++import java.util.function.Consumer;
+ 
+ public class PurpurLeafAPI {
+     private static ExecutorService executor;
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPath.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPath.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..51b85eeb62e30b437227a8cbeb2af261ea56c3d9
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPath.java
+@@ -0,0 +1,194 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Set;
++import java.util.function.Supplier;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.level.pathfinder.Node;
++import net.minecraft.world.level.pathfinder.Path;
++import net.minecraft.world.phys.Vec3;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++// Taken from Leaf (SparklyPaper)
++public class AsyncPath extends Path {
++    private volatile boolean processed = false;
++    private final List<Runnable> postProcessing = new ArrayList<>(0);
++    private final Set<BlockPos> positions;
++    private final Supplier<Path> pathSupplier;
++    private final List<Node> nodes;
++    @Nullable
++    private BlockPos target;
++    private float distToTarget = 0.0F;
++    private boolean canReach = true;
++
++    public AsyncPath(@NotNull List<Node> emptyNodeList, @NotNull Set<BlockPos> positions, @NotNull Supplier<Path> pathSupplier) {
++        super(emptyNodeList, null, false);
++        this.nodes = emptyNodeList;
++        this.positions = positions;
++        this.pathSupplier = pathSupplier;
++        AsyncPathProcessor.queue(this);
++    }
++
++    @Override
++    public boolean isProcessed() {
++        return this.processed;
++    }
++
++    public synchronized void postProcessing(@NotNull Runnable runnable) {
++        if (this.processed) {
++            runnable.run();
++        } else {
++            this.postProcessing.add(runnable);
++        }
++    }
++
++    public boolean hasSameProcessingPositions(Set<BlockPos> positions) {
++        return this.positions.size() == positions.size() && this.positions.containsAll(positions);
++    }
++
++    public synchronized void process() {
++        if (!this.processed) {
++            Path bestPath = this.pathSupplier.get();
++            this.nodes.addAll(bestPath.nodes);
++            this.target = bestPath.getTarget();
++            this.distToTarget = bestPath.getDistToTarget();
++            this.canReach = bestPath.canReach();
++            this.processed = true;
++
++            for (Runnable runnable : this.postProcessing) {
++                runnable.run();
++            }
++        }
++    }
++
++    private void checkProcessed() {
++        if (!this.processed) {
++            this.process();
++        }
++    }
++
++    @NotNull
++    @Override
++    public BlockPos getTarget() {
++        this.checkProcessed();
++        return this.target;
++    }
++
++    @Override
++    public float getDistToTarget() {
++        this.checkProcessed();
++        return this.distToTarget;
++    }
++
++    @Override
++    public boolean canReach() {
++        this.checkProcessed();
++        return this.canReach;
++    }
++
++    @Override
++    public boolean isDone() {
++        return this.isProcessed() && super.isDone();
++    }
++
++    @Override
++    public void advance() {
++        this.checkProcessed();
++        super.advance();
++    }
++
++    @Override
++    public boolean notStarted() {
++        this.checkProcessed();
++        return super.notStarted();
++    }
++
++    @Nullable
++    @Override
++    public Node getEndNode() {
++        this.checkProcessed();
++        return super.getEndNode();
++    }
++
++    @Override
++    public Node getNode(int index) {
++        this.checkProcessed();
++        return super.getNode(index);
++    }
++
++    @Override
++    public void truncateNodes(int length) {
++        this.checkProcessed();
++        super.truncateNodes(length);
++    }
++
++    @Override
++    public void replaceNode(int index, Node node) {
++        this.checkProcessed();
++        super.replaceNode(index, node);
++    }
++
++    @Override
++    public int getNodeCount() {
++        this.checkProcessed();
++        return super.getNodeCount();
++    }
++
++    @Override
++    public int getNextNodeIndex() {
++        this.checkProcessed();
++        return super.getNextNodeIndex();
++    }
++
++    @Override
++    public void setNextNodeIndex(int nodeIndex) {
++        this.checkProcessed();
++        super.setNextNodeIndex(nodeIndex);
++    }
++
++    @Override
++    public Vec3 getEntityPosAtNode(Entity entity, int index) {
++        this.checkProcessed();
++        return super.getEntityPosAtNode(entity, index);
++    }
++
++    @Override
++    public BlockPos getNodePos(int index) {
++        this.checkProcessed();
++        return super.getNodePos(index);
++    }
++
++    @Override
++    public Vec3 getNextEntityPos(Entity entity) {
++        this.checkProcessed();
++        return super.getNextEntityPos(entity);
++    }
++
++    @Override
++    public BlockPos getNextNodePos() {
++        this.checkProcessed();
++        return super.getNextNodePos();
++    }
++
++    @Override
++    public Node getNextNode() {
++        this.checkProcessed();
++        return super.getNextNode();
++    }
++
++    @Nullable
++    @Override
++    public Node getPreviousNode() {
++        this.checkProcessed();
++        return super.getPreviousNode();
++    }
++
++    @Override
++    public boolean hasNext() {
++        this.checkProcessed();
++        return super.hasNext();
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPathProcessor.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPathProcessor.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b55eed15cbcdca92d2072ce96e23145bb3cfe9b
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPathProcessor.java
+@@ -0,0 +1,23 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++import me.mrfunny.purpurleaf.PurpurLeafAPI;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.world.level.pathfinder.Path;
++
++import java.util.concurrent.CompletableFuture;
++import java.util.function.Consumer;
++
++// Taken from Leaf (SparklyPaper)
++public class AsyncPathProcessor {
++    public static void awaitProcessing(Path path, Consumer<Path> afterProcessing) {
++        if (path != null && !path.isProcessed() && path instanceof AsyncPath asyncPath) {
++            asyncPath.postProcessing(() -> MinecraftServer.getServer().processQueue.add(() -> afterProcessing.accept(path)));
++        } else {
++            afterProcessing.accept(path);
++        }
++    }
++
++    protected static CompletableFuture<Void> queue(AsyncPath path) {
++        return CompletableFuture.runAsync(path::process, PurpurLeafAPI.getExecutor());
++    }
++}
+diff --git a/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java b/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
+index ecd1bbd17cb0134cf1f4e99a3fea9e205d38f46b..901437bd5aea4c332a667002a27130950ea7613e 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
++++ b/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
+@@ -9,6 +9,8 @@ import java.util.Set;
+ import java.util.function.Predicate;
+ import java.util.stream.Collectors;
+ import javax.annotation.Nullable;
++
++import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.GlobalPos;
+ import net.minecraft.core.Holder;
+@@ -76,6 +78,33 @@ public class AcquirePoi {
+                                     io.papermc.paper.util.PoiAccess.findNearestPoiPositions(poiManager, poiPredicate, predicate2, entity.blockPosition(), world.purpurConfig.villagerAcquirePoiSearchRadius, world.purpurConfig.villagerAcquirePoiSearchRadius*world.purpurConfig.villagerAcquirePoiSearchRadius, PoiManager.Occupancy.HAS_SPACE, false, 5, poiposes); // Purpur
+                                     Set<Pair<Holder<PoiType>, BlockPos>> set = new java.util.HashSet<>(poiposes);
+                                     // Paper end - optimise POI access
++                                    // Leaf - petal start
++                                    if(PurpurleafConfig.enableAsynchronousPathfinding) {
++                                        Path possiblePath = findPathToPois(entity, set);
++                                        me.mrfunny.purpurleaf.asyncpath.AsyncPathProcessor.awaitProcessing(
++                                            possiblePath,
++                                            pathx -> {
++                                                if (pathx != null && pathx.canReach()) {
++                                                    BlockPos blockPos = pathx.getTarget();
++                                                    poiManager.getType(blockPos).ifPresent(poiType -> {
++                                                        poiManager.take(poiPredicate, (holder, blockPos2) -> blockPos2.equals(blockPos), blockPos, 1);
++                                                        queryResult.set(GlobalPos.of(world.dimension(), blockPos));
++                                                        entityStatus.ifPresent(status -> world.broadcastEntityEvent(entity, status));
++                                                        long2ObjectMap.clear();
++                                                        DebugPackets.sendPoiTicketCountPacket(world, blockPos);
++                                                    });
++                                                    return;
++                                                }
++                                                for (Pair<Holder<PoiType>, BlockPos> pairx : set) {
++                                                    long2ObjectMap.computeIfAbsent(
++                                                        pairx.getSecond().asLong(), m -> new AcquirePoi.JitteredLinearRetry(entity.level().random, time)
++                                                    );
++                                                }
++                                            }
++                                        );
++                                        return true;
++                                    }
++                                    // Leaf - petal end
+                                     Path path = findPathToPois(entity, set);
+                                     if (path != null && path.canReach()) {
+                                         BlockPos blockPos = path.getTarget();
+diff --git a/src/main/java/net/minecraft/world/level/pathfinder/Path.java b/src/main/java/net/minecraft/world/level/pathfinder/Path.java
+index d9d0fff9962131808d54cca20f209df50b8e4af1..a9ab19ee343cb47c7f9e8e65a23e01adbb32dc82 100644
+--- a/src/main/java/net/minecraft/world/level/pathfinder/Path.java
++++ b/src/main/java/net/minecraft/world/level/pathfinder/Path.java
+@@ -27,6 +27,11 @@ public class Path {
+         this.reached = reachesTarget;
+     }
+ 
++    // PurpurLeaf start - for async paths
++    public boolean isProcessed() {
++        return true; // Standard paths are already processed
++    }
++    // PurpurLeaf end
+     public void advance() {
+         this.nextNodeIndex++;
+     }

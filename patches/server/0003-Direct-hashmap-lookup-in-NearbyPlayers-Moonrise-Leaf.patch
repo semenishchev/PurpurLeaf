@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Oleksandr Semenishchev <sashasemenishchev@gmail.com>
 Date: Fri, 6 Dec 2024 16:03:55 +0100
-Subject: [PATCH] Moonrise&Leaf - add direct lookup by chunk for NearbyPlayers
+Subject: [PATCH] Direct hashmap lookup in NearbyPlayers (Moonrise, Leaf)
 
 
 diff --git a/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java b/src/main/java/ca/spottedleaf/moonrise/common/misc/NearbyPlayers.java
