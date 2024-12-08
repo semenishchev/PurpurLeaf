@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SashaSemenishchev <sashasemenishchev@gmail.com>
+Date: Sun, 8 Dec 2024 14:15:20 +0100
+Subject: [PATCH] Optimised distance checks and entity passengers
+
+
+diff --git a/src/main/java/net/minecraft/server/level/ChunkMap.java b/src/main/java/net/minecraft/server/level/ChunkMap.java
+index f9ae8b3dda09bfd448a042191c8b8c9afe3450d6..f9098d90309955ed10b219c12d05e237b78078be 100644
+--- a/src/main/java/net/minecraft/server/level/ChunkMap.java
++++ b/src/main/java/net/minecraft/server/level/ChunkMap.java
+@@ -1141,6 +1141,12 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+         private long lastChunkUpdate = -1L;
+         private ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk lastTrackedChunk;
+ 
++        // PurpurLeaf start - optimise distance checks
++        private int cachedMaxDistance = -1;
++        private int scaledMemory = -1;
++        private int scaledAsked = -1;
++        private short scaledRecalculateCounter = 0;
++        // PurpurLeaf end
+         @Override
+         public final void moonrise$tick(final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk) {
+             if (chunk == null) {
+@@ -1284,7 +1290,15 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+                 double vec3d_dz = player.getZ() - this.entity.getZ();
+                 // Paper end - remove allocation of Vec3D here
+                 int i = ChunkMap.this.getPlayerViewDistance(player);
+-                double d0 = (double) Math.min(this.getEffectiveRange(), i * 16);
++                // PurpurLeaf - optimise passengers
++                if (this.cachedMaxDistance == -1 || this.entity.isPassengerListDirty) {
++                    this.cachedMaxDistance = Math.min(this.getEffectiveRange(), i * 16);
++                    this.entity.isPassengerListDirty = false;
++                }
++
++                int effectiveRange = this.cachedMaxDistance;
++                // PurpurLeaf end
++                double d0 = (double)Math.min(effectiveRange, i * 16);
+                 double d1 = vec3d_dx * vec3d_dx + vec3d_dz * vec3d_dz; // Paper
+                 double d2 = d0 * d0;
+                 // Paper start - Configurable entity tracking range by Y
+@@ -1321,7 +1335,14 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+         }
+ 
+         private int scaledRange(int initialDistance) {
+-            return ChunkMap.this.level.getServer().getScaledTrackingDistance(initialDistance);
++            // PurpurLeaf start - cache distances
++            if(this.scaledAsked != initialDistance || --this.scaledRecalculateCounter <= 0) {
++                this.scaledRecalculateCounter = 10000;
++                this.scaledMemory = ChunkMap.this.level.getServer().getScaledTrackingDistance(initialDistance);
++                this.scaledAsked = initialDistance;
++            }
++            return this.scaledMemory;
++            // PurpurLeaf end
+         }
+ 
+         private static int getHighestRange(Entity parent, int highest) {
+diff --git a/src/main/java/net/minecraft/world/entity/Entity.java b/src/main/java/net/minecraft/world/entity/Entity.java
+index 5c00b440c7e7c759f806e0304166bceb5922cb5d..0e697692019f31408c4564d244544045b5ca7ca7 100644
+--- a/src/main/java/net/minecraft/world/entity/Entity.java
++++ b/src/main/java/net/minecraft/world/entity/Entity.java
+@@ -434,7 +434,15 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+     public int activatedPriority = gg.pufferfish.pufferfish.PufferfishConfig.maximumActivationPrio; // Pufferfish - DAB (golf score)
+     public final BlockPos.MutableBlockPos cachedBlockPos = new BlockPos.MutableBlockPos(); // Pufferfish - reduce entity allocations
+     public @Nullable Boolean immuneToFire = null; // Purpur - Fire immune API
+-
++    // PurpurLeaf start - optimise passengers
++    public boolean isPassengerListDirty = true;
++    public void setPassengerListDirtyRecursive(boolean dirty) {
++        this.isPassengerListDirty = true;
++        if(this.vehicle != null) {
++            this.vehicle.setPassengerListDirtyRecursive(dirty);
++        }
++    }
++    // PurpurLeaf end
+     public void setOrigin(@javax.annotation.Nonnull Location location) {
+         this.origin = location.toVector();
+         this.originWorld = location.getWorld().getUID();
+@@ -3191,6 +3199,7 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+             }
+             // Purpur end
+ 
++            setPassengerListDirtyRecursive(true); // PurpurLeaf
+             this.gameEvent(GameEvent.ENTITY_MOUNT, passenger);
+         }
+     }
+@@ -3248,6 +3257,7 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+ 
+             entity.boardingCooldown = 60;
+             this.gameEvent(GameEvent.ENTITY_DISMOUNT, entity);
++            setPassengerListDirtyRecursive(true); // PurpurLeaf
+         }
+         return true; // CraftBukkit
+     }

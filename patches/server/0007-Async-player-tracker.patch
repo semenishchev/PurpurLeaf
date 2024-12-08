@@ -53,56 +53,8 @@ index 7ce9ebba8ce304d1f3f21d4f15ee5f3560d7700b..a2c737e0498cd49848ea60cfa95a1ad2
  
          HandlerList handlers = event.getHandlers();
          RegisteredListener[] listeners = handlers.getRegisteredListeners();
-diff --git a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
-index 906164316fcd651e2d1e07214dad8675762a0c0f..bd34ff521b332f028a7e7a637394f4e83dbb3219 100644
---- a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
-+++ b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
-@@ -1,4 +1,43 @@
- package me.mrfunny.purpurleaf;
- 
-+import ca.spottedleaf.moonrise.common.util.TickThread;
-+import com.google.common.util.concurrent.ThreadFactoryBuilder;
-+import me.mrfunny.purpurleaf.config.PurpurleafConfig;
-+import me.mrfunny.purpurleaf.util.TickThreadFactory;
-+import me.mrfunny.purpurleaf.util.VirtualTickThreadFactory;
-+
-+import java.util.concurrent.*;
-+
- public class PurpurLeafAPI {
-+    private static ExecutorService executor;
-+    private static ScheduledExecutorService scheduledExecutor;
-+    public static void init() {
-+        // todo: count needed threads from counting async features in the config
-+        executor = PurpurleafConfig.virtualThreads
-+            ? Executors.newThreadPerTaskExecutor(new VirtualTickThreadFactory())
-+            : new ThreadPoolExecutor(
-+                2,
-+                2,
-+                0L,
-+                TimeUnit.MILLISECONDS,
-+                new LinkedBlockingQueue<>(),
-+                new ThreadFactoryBuilder()
-+                    .setDaemon(true)
-+                    .setThreadFactory(new TickThreadFactory())
-+                    .build()
-+            );
-+        scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
-+    }
-+
-+    public static ExecutorService getExecutor() {
-+        return executor;
-+    }
-+
-+    public static ScheduledExecutorService getScheduledExecutor() {
-+        return scheduledExecutor;
-+    }
-+
-+    public static void scheduleOnMainExecutor(Runnable runnable, long delay, TimeUnit timeUnit) {
-+        scheduledExecutor.schedule(() -> executor.execute(runnable), delay, timeUnit);
-+    }
- }
 diff --git a/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
-index 452440e12170dd388426fb87f089a2bd527d0e13..e98540aaa35a280f6bb57a2af0cd38fd99f18571 100644
+index 0a21da5931d9c308992c24bc7965154a3e37aef3..1a857730be6e03b2f82687cdbdfb4c468dbaff94 100644
 --- a/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
 +++ b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
 @@ -27,6 +27,14 @@ public class PurpurleafConfig {
@@ -277,7 +229,7 @@ index fe0b299e3510298cfaaa3f3f807751b97f27e47b..4523cce12ac710305cc7760f8fdcf9c8
          // Purpur end
          // Paper start - initialize global and world-defaults configuration
 diff --git a/src/main/java/net/minecraft/server/level/ChunkMap.java b/src/main/java/net/minecraft/server/level/ChunkMap.java
-index 6e60d88c8917c8a02029e7fd6bc45282fe7fe3e9..b1475316e4e5475c184c2e601b446928441526db 100644
+index 6e60d88c8917c8a02029e7fd6bc45282fe7fe3e9..f9ae8b3dda09bfd448a042191c8b8c9afe3450d6 100644
 --- a/src/main/java/net/minecraft/server/level/ChunkMap.java
 +++ b/src/main/java/net/minecraft/server/level/ChunkMap.java
 @@ -1,6 +1,9 @@
@@ -447,12 +399,16 @@ index 6e60d88c8917c8a02029e7fd6bc45282fe7fe3e9..b1475316e4e5475c184c2e601b446928
              this.newTrackerTick();
              return;
          }
-@@ -1109,7 +1131,7 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
+@@ -1109,7 +1131,11 @@ public class ChunkMap extends ChunkStorage implements ChunkHolder.PlayerProvider
          final Entity entity;
          private final int range;
          SectionPos lastSectionPos;
 -        public final Set<ServerPlayerConnection> seenBy = new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>(); // Paper - Perf: optimise map impl
-+        public final Set<ServerPlayerConnection> seenBy = me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousTracker ? new java.util.concurrent.CopyOnWriteArraySet<>() : new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>(); // Paper - Perf: optimise map impl
++        // PurpurLeaf start - different map impl depending on async tracker or not
++        public final Set<ServerPlayerConnection> seenBy = me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousTracker
++            ? new java.util.concurrent.CopyOnWriteArraySet<>()
++            : new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>(); // Paper - Perf: optimise map impl
++        // PurpurLeaf end
  
          // Paper start - optimise entity tracker
          private long lastChunkUpdate = -1L;

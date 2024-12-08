@@ -55,10 +55,10 @@ index 0000000000000000000000000000000000000000..c05d523ba05a0890195d18da4dda1ebd
 +}
 diff --git a/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..452440e12170dd388426fb87f089a2bd527d0e13
+index 0000000000000000000000000000000000000000..0a21da5931d9c308992c24bc7965154a3e37aef3
 --- /dev/null
 +++ b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,206 @@
 +package me.mrfunny.purpurleaf.config;
 +
 +import com.google.common.base.Throwables;
@@ -98,10 +98,11 @@ index 0000000000000000000000000000000000000000..452440e12170dd388426fb87f089a2bd
 +
 +    @Configurable(
 +        fullPath = "asynchronous.tracker",
-+        label = "threads",
-+        comment = "Configure maximum amount of threads for entity tracking."
++        rec = "true",
++        label = "enabled",
++        comment = "Enables Asynchronous Entity Tracker."
 +    )
-+    public static int trackerThreads = 1;
++    public static boolean enableAsynchronousPathfinding = false;
 +
 +    public PurpurleafConfig(@NotNull String worldName) {
 +        this.worldName = worldName;
