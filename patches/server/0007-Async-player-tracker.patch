@@ -152,7 +152,7 @@ index 0000000000000000000000000000000000000000..91599614cd70a3a0d277561d6dedfdd5
 +}
 diff --git a/src/main/java/me/mrfunny/purpurleaf/util/TickThreadFactory.java b/src/main/java/me/mrfunny/purpurleaf/util/TickThreadFactory.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d8cea702cba10c146d55bf680346c13ff50406c2
+index 0000000000000000000000000000000000000000..26bd1d10249186d7cd404305f9617d9c4a11bb17
 --- /dev/null
 +++ b/src/main/java/me/mrfunny/purpurleaf/util/TickThreadFactory.java
 @@ -0,0 +1,15 @@
@@ -168,12 +168,12 @@ index 0000000000000000000000000000000000000000..d8cea702cba10c146d55bf680346c13f
 +    private static final AtomicInteger threadNumber = new AtomicInteger(1);
 +    @Override
 +    public Thread newThread(@NotNull Runnable r) {
-+        return new TickThread(r, "tickthread-" + threadNumber.getAndIncrement());
++        return new TickThread(r, "tickthread-" + threadNumber.getAndIncrement() + "-purpurleaf");
 +    }
 +}
 diff --git a/src/main/java/me/mrfunny/purpurleaf/util/VirtualTickThreadFactory.java b/src/main/java/me/mrfunny/purpurleaf/util/VirtualTickThreadFactory.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..a1cbb35774130b6a8070277da7a766d071b10529
+index 0000000000000000000000000000000000000000..1ac2052013053dcbada3f51e86079b86bbc85b78
 --- /dev/null
 +++ b/src/main/java/me/mrfunny/purpurleaf/util/VirtualTickThreadFactory.java
 @@ -0,0 +1,17 @@
@@ -190,7 +190,7 @@ index 0000000000000000000000000000000000000000..a1cbb35774130b6a8070277da7a766d0
 +    @Override
 +    public Thread newThread(@NotNull Runnable r) {
 +        return Thread.ofVirtual()
-+            .name("tickvthread-" + threadNumber.getAndIncrement())
++            .name("tickvthread-" + threadNumber.getAndIncrement() + "-purpurleaf")
 +            .unstarted(r);
 +    }
 +}
