@@ -386,7 +386,7 @@ index 0000000000000000000000000000000000000000..b7a53f218bd31139d416705a29a26a89
 +    COMPLETED,
 +}
 diff --git a/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java b/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
-index ecd1bbd17cb0134cf1f4e99a3fea9e205d38f46b..901437bd5aea4c332a667002a27130950ea7613e 100644
+index ecd1bbd17cb0134cf1f4e99a3fea9e205d38f46b..c73c407578e632f56db79fa15d0e70a58dfa738e 100644
 --- a/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 +++ b/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 @@ -9,6 +9,8 @@ import java.util.Set;
@@ -402,7 +402,7 @@ index ecd1bbd17cb0134cf1f4e99a3fea9e205d38f46b..901437bd5aea4c332a667002a2713095
                                      io.papermc.paper.util.PoiAccess.findNearestPoiPositions(poiManager, poiPredicate, predicate2, entity.blockPosition(), world.purpurConfig.villagerAcquirePoiSearchRadius, world.purpurConfig.villagerAcquirePoiSearchRadius*world.purpurConfig.villagerAcquirePoiSearchRadius, PoiManager.Occupancy.HAS_SPACE, false, 5, poiposes); // Purpur
                                      Set<Pair<Holder<PoiType>, BlockPos>> set = new java.util.HashSet<>(poiposes);
                                      // Paper end - optimise POI access
-+                                    // Leaf - petal start
++                                    // Leaf start - petal async pathfinding
 +                                    if(PurpurleafConfig.enableAsynchronousPathfinding) {
 +                                        Path possiblePath = findPathToPois(entity, set);
 +                                        me.mrfunny.purpurleaf.asyncpath.AsyncPathProcessor.awaitProcessing(
@@ -595,6 +595,19 @@ index 6802e0c4d331c7125114dd86409f6a110465ab82..aa5ff1e0bb1be1025da25ce2dfe71b16
                                          Path path = AcquirePoi.findPathToPois(entity, set);
                                          if (path != null && path.canReach()) {
                                              BlockPos blockPos = path.getTarget();
+diff --git a/src/main/java/net/minecraft/world/entity/ai/goal/DoorInteractGoal.java b/src/main/java/net/minecraft/world/entity/ai/goal/DoorInteractGoal.java
+index 74aca307b4ebffe4e33c4fca3e07c23ca87622ac..253497b3d54ac2fbfd34ce4130bf264a37233952 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/goal/DoorInteractGoal.java
++++ b/src/main/java/net/minecraft/world/entity/ai/goal/DoorInteractGoal.java
+@@ -56,7 +56,7 @@ public abstract class DoorInteractGoal extends Goal {
+         } else {
+             GroundPathNavigation groundPathNavigation = (GroundPathNavigation)this.mob.getNavigation();
+             Path path = groundPathNavigation.getPath();
+-            if (path != null && !path.isDone() && groundPathNavigation.canOpenDoors()) {
++            if (path != null && path.isProcessed() && !path.isDone() && groundPathNavigation.canOpenDoors()) {
+                 for (int i = 0; i < Math.min(path.getNextNodeIndex() + 2, path.getNodeCount()); i++) {
+                     Node node = path.getNode(i);
+                     this.doorPos = new BlockPos(node.x, node.y + 1, node.z);
 diff --git a/src/main/java/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java b/src/main/java/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java
 index ee38e447a810094d2253b85714b74282a4b4c2bc..8072c1c34ca89b879fb8eba3873a3fa5f099d011 100644
 --- a/src/main/java/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java
@@ -707,7 +720,7 @@ index 62634bedd97c5be9ecce24ab0cff205715a68da8..3eadc947068ae07a2f6ad793812e58bc
  
      @Override
 diff --git a/src/main/java/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/src/main/java/net/minecraft/world/entity/ai/navigation/PathNavigation.java
-index 544920a31b649985333f82beafa94a3392f5853e..9a14443e7318868c03814dd180ee014c1417f10c 100644
+index 544920a31b649985333f82beafa94a3392f5853e..7bb9ea27cc676669bbf28c256257ccfa3fb55723 100644
 --- a/src/main/java/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 +++ b/src/main/java/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 @@ -152,7 +152,12 @@ public abstract class PathNavigation {
@@ -789,7 +802,7 @@ index 544920a31b649985333f82beafa94a3392f5853e..9a14443e7318868c03814dd180ee014c
      }
  
      protected void followThePath() {
-+        if(this.path.isProcessed()) return; // PurpurLeaf - petal skip if processed
++        if(!this.path.isProcessed()) return; // PurpurLeaf - petal skip if processed
          Vec3 vec3 = this.getTempMobPos();
          this.maxDistanceToWaypoint = this.mob.getBbWidth() > 0.75F ? this.mob.getBbWidth() / 2.0F : 0.75F - this.mob.getBbWidth() / 2.0F;
          Vec3i vec3i = this.path.getNextNodePos();
