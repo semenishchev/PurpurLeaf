@@ -1,0 +1,1185 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SashaSemenishchev <sashasemenishchev@gmail.com>
+Date: Sun, 8 Dec 2024 23:25:12 +0100
+Subject: [PATCH] Async path processing (Leaf, Petal, SparklyPaper)
+
+
+diff --git a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+index a780d3a43ac67156acc365649c99d851b22178c1..370927c14b2089dc2db9002bda191937ecc5817f 100644
+--- a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
++++ b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+@@ -5,8 +5,11 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
+ import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import me.mrfunny.purpurleaf.util.TickThreadFactory;
+ import me.mrfunny.purpurleaf.util.VirtualTickThreadFactory;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.world.level.pathfinder.Path;
+ 
+ import java.util.concurrent.*;
++import java.util.function.Consumer;
+ 
+ public class PurpurLeafAPI {
+     private static ExecutorService executor;
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPath.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPath.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..51b85eeb62e30b437227a8cbeb2af261ea56c3d9
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPath.java
+@@ -0,0 +1,194 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Set;
++import java.util.function.Supplier;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.level.pathfinder.Node;
++import net.minecraft.world.level.pathfinder.Path;
++import net.minecraft.world.phys.Vec3;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++// Taken from Leaf (SparklyPaper)
++public class AsyncPath extends Path {
++    private volatile boolean processed = false;
++    private final List<Runnable> postProcessing = new ArrayList<>(0);
++    private final Set<BlockPos> positions;
++    private final Supplier<Path> pathSupplier;
++    private final List<Node> nodes;
++    @Nullable
++    private BlockPos target;
++    private float distToTarget = 0.0F;
++    private boolean canReach = true;
++
++    public AsyncPath(@NotNull List<Node> emptyNodeList, @NotNull Set<BlockPos> positions, @NotNull Supplier<Path> pathSupplier) {
++        super(emptyNodeList, null, false);
++        this.nodes = emptyNodeList;
++        this.positions = positions;
++        this.pathSupplier = pathSupplier;
++        AsyncPathProcessor.queue(this);
++    }
++
++    @Override
++    public boolean isProcessed() {
++        return this.processed;
++    }
++
++    public synchronized void postProcessing(@NotNull Runnable runnable) {
++        if (this.processed) {
++            runnable.run();
++        } else {
++            this.postProcessing.add(runnable);
++        }
++    }
++
++    public boolean hasSameProcessingPositions(Set<BlockPos> positions) {
++        return this.positions.size() == positions.size() && this.positions.containsAll(positions);
++    }
++
++    public synchronized void process() {
++        if (!this.processed) {
++            Path bestPath = this.pathSupplier.get();
++            this.nodes.addAll(bestPath.nodes);
++            this.target = bestPath.getTarget();
++            this.distToTarget = bestPath.getDistToTarget();
++            this.canReach = bestPath.canReach();
++            this.processed = true;
++
++            for (Runnable runnable : this.postProcessing) {
++                runnable.run();
++            }
++        }
++    }
++
++    private void checkProcessed() {
++        if (!this.processed) {
++            this.process();
++        }
++    }
++
++    @NotNull
++    @Override
++    public BlockPos getTarget() {
++        this.checkProcessed();
++        return this.target;
++    }
++
++    @Override
++    public float getDistToTarget() {
++        this.checkProcessed();
++        return this.distToTarget;
++    }
++
++    @Override
++    public boolean canReach() {
++        this.checkProcessed();
++        return this.canReach;
++    }
++
++    @Override
++    public boolean isDone() {
++        return this.isProcessed() && super.isDone();
++    }
++
++    @Override
++    public void advance() {
++        this.checkProcessed();
++        super.advance();
++    }
++
++    @Override
++    public boolean notStarted() {
++        this.checkProcessed();
++        return super.notStarted();
++    }
++
++    @Nullable
++    @Override
++    public Node getEndNode() {
++        this.checkProcessed();
++        return super.getEndNode();
++    }
++
++    @Override
++    public Node getNode(int index) {
++        this.checkProcessed();
++        return super.getNode(index);
++    }
++
++    @Override
++    public void truncateNodes(int length) {
++        this.checkProcessed();
++        super.truncateNodes(length);
++    }
++
++    @Override
++    public void replaceNode(int index, Node node) {
++        this.checkProcessed();
++        super.replaceNode(index, node);
++    }
++
++    @Override
++    public int getNodeCount() {
++        this.checkProcessed();
++        return super.getNodeCount();
++    }
++
++    @Override
++    public int getNextNodeIndex() {
++        this.checkProcessed();
++        return super.getNextNodeIndex();
++    }
++
++    @Override
++    public void setNextNodeIndex(int nodeIndex) {
++        this.checkProcessed();
++        super.setNextNodeIndex(nodeIndex);
++    }
++
++    @Override
++    public Vec3 getEntityPosAtNode(Entity entity, int index) {
++        this.checkProcessed();
++        return super.getEntityPosAtNode(entity, index);
++    }
++
++    @Override
++    public BlockPos getNodePos(int index) {
++        this.checkProcessed();
++        return super.getNodePos(index);
++    }
++
++    @Override
++    public Vec3 getNextEntityPos(Entity entity) {
++        this.checkProcessed();
++        return super.getNextEntityPos(entity);
++    }
++
++    @Override
++    public BlockPos getNextNodePos() {
++        this.checkProcessed();
++        return super.getNextNodePos();
++    }
++
++    @Override
++    public Node getNextNode() {
++        this.checkProcessed();
++        return super.getNextNode();
++    }
++
++    @Nullable
++    @Override
++    public Node getPreviousNode() {
++        this.checkProcessed();
++        return super.getPreviousNode();
++    }
++
++    @Override
++    public boolean hasNext() {
++        this.checkProcessed();
++        return super.hasNext();
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPathProcessor.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPathProcessor.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b55eed15cbcdca92d2072ce96e23145bb3cfe9b
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/AsyncPathProcessor.java
+@@ -0,0 +1,23 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++import me.mrfunny.purpurleaf.PurpurLeafAPI;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.world.level.pathfinder.Path;
++
++import java.util.concurrent.CompletableFuture;
++import java.util.function.Consumer;
++
++// Taken from Leaf (SparklyPaper)
++public class AsyncPathProcessor {
++    public static void awaitProcessing(Path path, Consumer<Path> afterProcessing) {
++        if (path != null && !path.isProcessed() && path instanceof AsyncPath asyncPath) {
++            asyncPath.postProcessing(() -> MinecraftServer.getServer().processQueue.add(() -> afterProcessing.accept(path)));
++        } else {
++            afterProcessing.accept(path);
++        }
++    }
++
++    protected static CompletableFuture<Void> queue(AsyncPath path) {
++        return CompletableFuture.runAsync(path::process, PurpurLeafAPI.getExecutor());
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorCache.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorCache.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..16cec56b5fdf9fbd3f0257104a27d72d73e7f471
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorCache.java
+@@ -0,0 +1,44 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++import ca.spottedleaf.concurrentutil.collection.MultiThreadedQueue;
++import net.minecraft.world.level.pathfinder.NodeEvaluator;
++import org.apache.commons.lang.Validate;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.Map;
++import java.util.Queue;
++import java.util.concurrent.ConcurrentHashMap;
++
++public class NodeEvaluatorCache {
++    private static final Map<NodeEvaluatorFeatures, MultiThreadedQueue<NodeEvaluator>> threadLocalNodeEvaluators = new ConcurrentHashMap<>();
++    private static final Map<NodeEvaluator, NodeEvaluatorGenerator> nodeEvaluatorToGenerator = new ConcurrentHashMap<>();
++
++    private static @NotNull Queue<NodeEvaluator> getQueueForFeatures(@NotNull NodeEvaluatorFeatures nodeEvaluatorFeatures) {
++        return threadLocalNodeEvaluators.computeIfAbsent(nodeEvaluatorFeatures, key -> new MultiThreadedQueue<>());
++    }
++
++    public static @NotNull NodeEvaluator takeNodeEvaluator(@NotNull NodeEvaluatorGenerator generator, @NotNull NodeEvaluator localNodeEvaluator) {
++        final NodeEvaluatorFeatures nodeEvaluatorFeatures = NodeEvaluatorFeatures.fromNodeEvaluator(localNodeEvaluator);
++        NodeEvaluator nodeEvaluator = getQueueForFeatures(nodeEvaluatorFeatures).poll();
++
++        if (nodeEvaluator == null) {
++            nodeEvaluator = generator.generate(nodeEvaluatorFeatures);
++        }
++
++        nodeEvaluatorToGenerator.put(nodeEvaluator, generator);
++
++        return nodeEvaluator;
++    }
++
++    public static void returnNodeEvaluator(@NotNull NodeEvaluator nodeEvaluator) {
++        final NodeEvaluatorGenerator generator = nodeEvaluatorToGenerator.remove(nodeEvaluator);
++        Validate.notNull(generator, "NodeEvaluator already returned");
++
++        final NodeEvaluatorFeatures nodeEvaluatorFeatures = NodeEvaluatorFeatures.fromNodeEvaluator(nodeEvaluator);
++        getQueueForFeatures(nodeEvaluatorFeatures).offer(nodeEvaluator);
++    }
++
++    public static void removeNodeEvaluator(@NotNull NodeEvaluator nodeEvaluator) {
++        nodeEvaluatorToGenerator.remove(nodeEvaluator);
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorFeatures.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorFeatures.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..83e5d727d05d1e75d9ffb1e6432ce2735304e1f7
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorFeatures.java
+@@ -0,0 +1,24 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++import net.minecraft.world.level.pathfinder.NodeEvaluator;
++import net.minecraft.world.level.pathfinder.SwimNodeEvaluator;
++
++// Taken from Leaf (petal)
++public record NodeEvaluatorFeatures(
++    NodeEvaluatorType type,
++    boolean canPassDoors,
++    boolean canFloat,
++    boolean canWalkOverFences,
++    boolean canOpenDoors,
++    boolean allowBreaching
++) {
++    public static NodeEvaluatorFeatures fromNodeEvaluator(NodeEvaluator nodeEvaluator) {
++        NodeEvaluatorType type = NodeEvaluatorType.fromNodeEvaluator(nodeEvaluator);
++        boolean canPassDoors = nodeEvaluator.canPassDoors();
++        boolean canFloat = nodeEvaluator.canFloat();
++        boolean canWalkOverFences = nodeEvaluator.canWalkOverFences();
++        boolean canOpenDoors = nodeEvaluator.canOpenDoors();
++        boolean allowBreaching = nodeEvaluator instanceof SwimNodeEvaluator swimNodeEvaluator && swimNodeEvaluator.allowBreaching;
++        return new NodeEvaluatorFeatures(type, canPassDoors, canFloat, canWalkOverFences, canOpenDoors, allowBreaching);
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorGenerator.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorGenerator.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..89c5d806a00f48901fbe0a92b833eafd64a5357e
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorGenerator.java
+@@ -0,0 +1,10 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++import net.minecraft.world.level.pathfinder.NodeEvaluator;
++import org.jetbrains.annotations.NotNull;
++
++// Taken from Leaf (Petal)
++public interface NodeEvaluatorGenerator {
++    @NotNull
++    NodeEvaluator generate(NodeEvaluatorFeatures nodeEvaluatorFeatures);
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorType.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorType.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..640a1e1a8e533c349ca00f2dd93df930cb60af52
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/NodeEvaluatorType.java
+@@ -0,0 +1,21 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++import net.minecraft.world.level.pathfinder.AmphibiousNodeEvaluator;
++import net.minecraft.world.level.pathfinder.FlyNodeEvaluator;
++import net.minecraft.world.level.pathfinder.NodeEvaluator;
++import net.minecraft.world.level.pathfinder.SwimNodeEvaluator;
++
++// Taken from Leaf (petal)
++public enum NodeEvaluatorType {
++    WALK,
++    SWIM,
++    AMPHIBIOUS,
++    FLY;
++
++    public static NodeEvaluatorType fromNodeEvaluator(NodeEvaluator nodeEvaluator) {
++        if (nodeEvaluator instanceof SwimNodeEvaluator) return SWIM;
++        if (nodeEvaluator instanceof FlyNodeEvaluator) return FLY;
++        if (nodeEvaluator instanceof AmphibiousNodeEvaluator) return AMPHIBIOUS;
++        return WALK;
++    }
++}
+diff --git a/src/main/java/me/mrfunny/purpurleaf/asyncpath/PathProcessState.java b/src/main/java/me/mrfunny/purpurleaf/asyncpath/PathProcessState.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7a53f218bd31139d416705a29a26a890a6d171a
+--- /dev/null
++++ b/src/main/java/me/mrfunny/purpurleaf/asyncpath/PathProcessState.java
+@@ -0,0 +1,7 @@
++package me.mrfunny.purpurleaf.asyncpath;
++
++public enum PathProcessState {
++    WAITING,
++    PROCESSING,
++    COMPLETED,
++}
+diff --git a/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java b/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
+index ecd1bbd17cb0134cf1f4e99a3fea9e205d38f46b..901437bd5aea4c332a667002a27130950ea7613e 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
++++ b/src/main/java/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
+@@ -9,6 +9,8 @@ import java.util.Set;
+ import java.util.function.Predicate;
+ import java.util.stream.Collectors;
+ import javax.annotation.Nullable;
++
++import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.GlobalPos;
+ import net.minecraft.core.Holder;
+@@ -76,6 +78,33 @@ public class AcquirePoi {
+                                     io.papermc.paper.util.PoiAccess.findNearestPoiPositions(poiManager, poiPredicate, predicate2, entity.blockPosition(), world.purpurConfig.villagerAcquirePoiSearchRadius, world.purpurConfig.villagerAcquirePoiSearchRadius*world.purpurConfig.villagerAcquirePoiSearchRadius, PoiManager.Occupancy.HAS_SPACE, false, 5, poiposes); // Purpur
+                                     Set<Pair<Holder<PoiType>, BlockPos>> set = new java.util.HashSet<>(poiposes);
+                                     // Paper end - optimise POI access
++                                    // Leaf - petal start
++                                    if(PurpurleafConfig.enableAsynchronousPathfinding) {
++                                        Path possiblePath = findPathToPois(entity, set);
++                                        me.mrfunny.purpurleaf.asyncpath.AsyncPathProcessor.awaitProcessing(
++                                            possiblePath,
++                                            pathx -> {
++                                                if (pathx != null && pathx.canReach()) {
++                                                    BlockPos blockPos = pathx.getTarget();
++                                                    poiManager.getType(blockPos).ifPresent(poiType -> {
++                                                        poiManager.take(poiPredicate, (holder, blockPos2) -> blockPos2.equals(blockPos), blockPos, 1);
++                                                        queryResult.set(GlobalPos.of(world.dimension(), blockPos));
++                                                        entityStatus.ifPresent(status -> world.broadcastEntityEvent(entity, status));
++                                                        long2ObjectMap.clear();
++                                                        DebugPackets.sendPoiTicketCountPacket(world, blockPos);
++                                                    });
++                                                    return;
++                                                }
++                                                for (Pair<Holder<PoiType>, BlockPos> pairx : set) {
++                                                    long2ObjectMap.computeIfAbsent(
++                                                        pairx.getSecond().asLong(), m -> new AcquirePoi.JitteredLinearRetry(entity.level().random, time)
++                                                    );
++                                                }
++                                            }
++                                        );
++                                        return true;
++                                    }
++                                    // Leaf - petal end
+                                     Path path = findPathToPois(entity, set);
+                                     if (path != null && path.canReach()) {
+                                         BlockPos blockPos = path.getTarget();
+diff --git a/src/main/java/net/minecraft/world/entity/ai/behavior/MoveToTargetSink.java b/src/main/java/net/minecraft/world/entity/ai/behavior/MoveToTargetSink.java
+index 2a7a26ca447cc78f24e61a2bf557411c31eb16b2..cdfde34ecb449a0911e1fb358c50272a62673b62 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/behavior/MoveToTargetSink.java
++++ b/src/main/java/net/minecraft/world/entity/ai/behavior/MoveToTargetSink.java
+@@ -3,6 +3,7 @@ package net.minecraft.world.entity.ai.behavior;
+ import com.google.common.collect.ImmutableMap;
+ import java.util.Optional;
+ import javax.annotation.Nullable;
++import me.mrfunny.purpurleaf.config.PurpurleafConfig;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.entity.Mob;
+@@ -24,6 +25,7 @@ public class MoveToTargetSink extends Behavior<Mob> {
+     @Nullable
+     private BlockPos lastTargetPos;
+     private float speedModifier;
++    private boolean finishedProcessing = false; // PurpurLeaf - petal async pathfinding
+ 
+     public MoveToTargetSink() {
+         this(150, 250);
+@@ -53,9 +55,13 @@ public class MoveToTargetSink extends Behavior<Mob> {
+             Brain<?> brain = entity.getBrain();
+             WalkTarget walkTarget = brain.getMemory(MemoryModuleType.WALK_TARGET).get();
+             boolean bl = this.reachedTarget(entity, walkTarget);
+-            if (!bl && this.tryComputePath(entity, walkTarget, world.getGameTime())) {
++            // PurpurLeaf start - check for async conditions
++            if (!PurpurleafConfig.enableAsynchronousPathfinding && !bl && this.tryComputePath(entity, walkTarget, world.getGameTime())) {
+                 this.lastTargetPos = walkTarget.getTarget().currentBlockPosition();
+                 return true;
++            } else if (PurpurleafConfig.enableAsynchronousPathfinding && !bl) {
++                return true;
++            // PurpurLeaf end
+             } else {
+                 brain.eraseMemory(MemoryModuleType.WALK_TARGET);
+                 if (bl) {
+@@ -69,6 +75,11 @@ public class MoveToTargetSink extends Behavior<Mob> {
+ 
+     @Override
+     protected boolean canStillUse(ServerLevel world, Mob entity, long time) {
++        // PurpurLeaf start - check for async
++        if(PurpurleafConfig.enableAsynchronousPathfinding && !this.finishedProcessing) {
++            return true;
++        }
++        // PurpurLeaf end
+         if (this.path != null && this.lastTargetPos != null) {
+             Optional<WalkTarget> optional = entity.getBrain().getMemory(MemoryModuleType.WALK_TARGET);
+             boolean bl = optional.map(MoveToTargetSink::isWalkTargetSpectator).orElse(false);
+@@ -93,14 +104,86 @@ public class MoveToTargetSink extends Behavior<Mob> {
+         this.path = null;
+     }
+ 
++    // PurpurLeaf start - petal async pathfinding
+     @Override
+     protected void start(ServerLevel serverLevel, Mob mob, long l) {
++        checker: if(PurpurleafConfig.enableAsynchronousPathfinding) {
++            Brain<?> brain = mob.getBrain();
++            WalkTarget walkTarget = brain.getMemory(MemoryModuleType.WALK_TARGET).orElse(null);
++            if(walkTarget == null) {
++                // todo: warning
++                break checker;
++            }
++            this.lastTargetPos = walkTarget.getTarget().currentBlockPosition();
++            this.path = this.computePath(mob, walkTarget);
++            return;
++        }
++
+         mob.getBrain().setMemory(MemoryModuleType.PATH, this.path);
+         mob.getNavigation().moveTo(this.path, (double)this.speedModifier);
+     }
+ 
++    @Nullable
++    private Path computePath(Mob entity, WalkTarget walkTarget) {
++        BlockPos blockPos = walkTarget.getTarget().currentBlockPosition();
++        this.speedModifier = walkTarget.getSpeedModifier();
++        Brain<?> brain = entity.getBrain();
++        if (this.reachedTarget(entity, walkTarget)) {
++            brain.eraseMemory(MemoryModuleType.CANT_REACH_WALK_TARGET_SINCE);
++        }
++
++        return entity.getNavigation().createPath(blockPos, 0);
++    }
++    // PurpurLeaf end
++
+     @Override
+     protected void tick(ServerLevel serverLevel, Mob mob, long l) {
++        // PurpurLeaf start - petal pathfinding
++        if (PurpurleafConfig.enableAsynchronousPathfinding) {
++            if (this.path != null && !this.path.isProcessed()) {
++                return;
++            }
++
++            if (!this.finishedProcessing) {
++                this.finishedProcessing = true;
++                Brain<?> brain = mob.getBrain();
++                boolean canReach = this.path != null && this.path.canReach();
++                if (canReach) {
++                    brain.eraseMemory(MemoryModuleType.CANT_REACH_WALK_TARGET_SINCE);
++                } else if (!brain.hasMemoryValue(MemoryModuleType.CANT_REACH_WALK_TARGET_SINCE)) {
++                    brain.setMemory(MemoryModuleType.CANT_REACH_WALK_TARGET_SINCE, l);
++                }
++
++                if (!canReach) {
++                    WalkTarget walkTarget = brain.getMemory(MemoryModuleType.WALK_TARGET).orElse(null);
++                    if (walkTarget == null) {
++                        return;
++                    }
++
++                    BlockPos blockPos = walkTarget.getTarget().currentBlockPosition();
++                    Vec3 vec3 = DefaultRandomPos.getPosTowards((PathfinderMob)mob, 10, 7, Vec3.atBottomCenterOf(blockPos), (float) (Math.PI / 2));
++                    if (vec3 != null) {
++                        this.path = mob.getNavigation().createPath(vec3.x, vec3.y, vec3.z, 0);
++                        this.finishedProcessing = false;
++                        return;
++                    }
++                }
++
++                mob.getBrain().setMemory(MemoryModuleType.PATH, this.path);
++                mob.getNavigation().moveTo(this.path, this.speedModifier);
++            }
++
++            Path path = mob.getNavigation().getPath();
++            Brain<?> brainx = mob.getBrain();
++            if (path != null && this.lastTargetPos != null && brainx.hasMemoryValue(MemoryModuleType.WALK_TARGET)) {
++                WalkTarget walkTargetx = brainx.getMemory(MemoryModuleType.WALK_TARGET).get();
++                if (walkTargetx.getTarget().currentBlockPosition().distSqr(this.lastTargetPos) > 4.0) {
++                    this.start(serverLevel, mob, l);
++                }
++            }
++            return;
++        }
++        // PurpurLeaf end
+         Path path = mob.getNavigation().getPath();
+         Brain<?> brain = mob.getBrain();
+         if (this.path != path) {
+diff --git a/src/main/java/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java b/src/main/java/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
+index 6802e0c4d331c7125114dd86409f6a110465ab82..aa5ff1e0bb1be1025da25ce2dfe71b16b2beb1d5 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
++++ b/src/main/java/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
+@@ -60,6 +60,24 @@ public class SetClosestHomeAsWalkTarget {
+                                                 poiType -> poiType.is(PoiTypes.HOME), predicate, entity.blockPosition(), 48, PoiManager.Occupancy.ANY
+                                             )
+                                             .collect(Collectors.toSet());
++                                        // PurpurLeaf start - petal async pathfinding
++                                        if (me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding) {
++                                            Path possiblePath = AcquirePoi.findPathToPois(entity, set);
++                                            me.mrfunny.purpurleaf.asyncpath.AsyncPathProcessor.awaitProcessing(possiblePath, path -> {
++                                                if (path != null && path.canReach() && mutableInt.getValue() >= 5) {
++                                                    BlockPos blockPosx = path.getTarget();
++                                                    Optional<Holder<PoiType>> optional2x = poiManager.getType(blockPosx);
++                                                    if (optional2x.isPresent()) {
++                                                        walkTarget.set(new WalkTarget(blockPosx, speed, 1));
++                                                        DebugPackets.sendPoiTicketCountPacket(world, blockPosx);
++                                                    }
++                                                } else {
++                                                    long2LongMap.long2LongEntrySet().removeIf(entry -> entry.getLongValue() < mutableLong.getValue());
++                                                }
++                                            });
++                                            return true;
++                                        }
++                                        // PurpurLeaf end
+                                         Path path = AcquirePoi.findPathToPois(entity, set);
+                                         if (path != null && path.canReach()) {
+                                             BlockPos blockPos = path.getTarget();
+diff --git a/src/main/java/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java b/src/main/java/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java
+index ee38e447a810094d2253b85714b74282a4b4c2bc..8072c1c34ca89b879fb8eba3873a3fa5f099d011 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java
++++ b/src/main/java/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java
+@@ -8,6 +8,16 @@ import net.minecraft.world.level.pathfinder.PathFinder;
+ import net.minecraft.world.phys.Vec3;
+ 
+ public class AmphibiousPathNavigation extends PathNavigation {
++    // PurpurLeaf start - petal async pathfinding
++    private static final me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorGenerator nodeEvaluatorGenerator = features -> {
++        AmphibiousNodeEvaluator nodeEvaluator = new AmphibiousNodeEvaluator(false);
++        nodeEvaluator.setCanPassDoors(features.canPassDoors());
++        nodeEvaluator.setCanFloat(features.canFloat());
++        nodeEvaluator.setCanWalkOverFences(features.canWalkOverFences());
++        nodeEvaluator.setCanOpenDoors(features.canOpenDoors());
++        return nodeEvaluator;
++    };
++    // PurpurLeaf end
+     public AmphibiousPathNavigation(Mob mob, Level world) {
+         super(mob, world);
+     }
+@@ -16,7 +26,11 @@ public class AmphibiousPathNavigation extends PathNavigation {
+     protected PathFinder createPathFinder(int range) {
+         this.nodeEvaluator = new AmphibiousNodeEvaluator(false);
+         this.nodeEvaluator.setCanPassDoors(true);
+-        return new PathFinder(this.nodeEvaluator, range);
++        // PurpurLeaf start - petal async pathfinding
++        return me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding
++            ? new PathFinder(super.nodeEvaluator, range, nodeEvaluatorGenerator)
++            : new PathFinder(super.nodeEvaluator, range);
++        // PurpurLeaf end
+     }
+ 
+     @Override
+diff --git a/src/main/java/net/minecraft/world/entity/ai/navigation/FlyingPathNavigation.java b/src/main/java/net/minecraft/world/entity/ai/navigation/FlyingPathNavigation.java
+index a3e0c5af4cc9323c02e88e768cbda9e46854aea1..3bb11359439f2afa699502efaff797a529c2adb1 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/navigation/FlyingPathNavigation.java
++++ b/src/main/java/net/minecraft/world/entity/ai/navigation/FlyingPathNavigation.java
+@@ -12,6 +12,16 @@ import net.minecraft.world.level.pathfinder.PathFinder;
+ import net.minecraft.world.phys.Vec3;
+ 
+ public class FlyingPathNavigation extends PathNavigation {
++    // PurpurLeaf start - petal async pathfinding
++    private static final me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorGenerator nodeEvaluatorGenerator = features -> {
++        FlyNodeEvaluator nodeEvaluator = new FlyNodeEvaluator();
++        nodeEvaluator.setCanPassDoors(features.canPassDoors());
++        nodeEvaluator.setCanFloat(features.canFloat());
++        nodeEvaluator.setCanWalkOverFences(features.canWalkOverFences());
++        nodeEvaluator.setCanOpenDoors(features.canOpenDoors());
++        return nodeEvaluator;
++    };
++    // PurpurLeaf end
+     public FlyingPathNavigation(Mob entity, Level world) {
+         super(entity, world);
+     }
+@@ -20,7 +30,11 @@ public class FlyingPathNavigation extends PathNavigation {
+     protected PathFinder createPathFinder(int range) {
+         this.nodeEvaluator = new FlyNodeEvaluator();
+         this.nodeEvaluator.setCanPassDoors(true);
+-        return new PathFinder(this.nodeEvaluator, range);
++        // PurpurLeaf start - petal async pathfinding
++        return me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding
++            ? new PathFinder(super.nodeEvaluator, range, nodeEvaluatorGenerator)
++            : new PathFinder(super.nodeEvaluator, range);
++        // PurpurLeaf end
+     }
+ 
+     @Override
+diff --git a/src/main/java/net/minecraft/world/entity/ai/navigation/GroundPathNavigation.java b/src/main/java/net/minecraft/world/entity/ai/navigation/GroundPathNavigation.java
+index 62634bedd97c5be9ecce24ab0cff205715a68da8..3eadc947068ae07a2f6ad793812e58bc8ee5f6b7 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/navigation/GroundPathNavigation.java
++++ b/src/main/java/net/minecraft/world/entity/ai/navigation/GroundPathNavigation.java
+@@ -9,14 +9,20 @@ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.block.Blocks;
+ import net.minecraft.world.level.block.state.BlockState;
+ import net.minecraft.world.level.chunk.LevelChunk;
+-import net.minecraft.world.level.pathfinder.Node;
+-import net.minecraft.world.level.pathfinder.Path;
+-import net.minecraft.world.level.pathfinder.PathFinder;
+-import net.minecraft.world.level.pathfinder.PathType;
+-import net.minecraft.world.level.pathfinder.WalkNodeEvaluator;
++import net.minecraft.world.level.pathfinder.*;
+ import net.minecraft.world.phys.Vec3;
+ 
+ public class GroundPathNavigation extends PathNavigation {
++    // PurpurLeaf start - petal async pathfinding
++    public static final me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorGenerator nodeEvaluatorGenerator = features -> {
++        WalkNodeEvaluator nodeEvaluator = new WalkNodeEvaluator();
++        nodeEvaluator.setCanPassDoors(features.canPassDoors());
++        nodeEvaluator.setCanFloat(features.canFloat());
++        nodeEvaluator.setCanWalkOverFences(features.canWalkOverFences());
++        nodeEvaluator.setCanOpenDoors(features.canOpenDoors());
++        return nodeEvaluator;
++    };
++    // PurpurLeaf end
+     private boolean avoidSun;
+ 
+     public GroundPathNavigation(Mob entity, Level world) {
+@@ -27,7 +33,11 @@ public class GroundPathNavigation extends PathNavigation {
+     protected PathFinder createPathFinder(int range) {
+         this.nodeEvaluator = new WalkNodeEvaluator();
+         this.nodeEvaluator.setCanPassDoors(true);
+-        return new PathFinder(this.nodeEvaluator, range);
++        // PurpurLeaf start - petal async pathfinding
++        return me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding
++            ? new PathFinder(super.nodeEvaluator, range, nodeEvaluatorGenerator)
++            : new PathFinder(super.nodeEvaluator, range);
++        // PurpurLeaf end
+     }
+ 
+     @Override
+diff --git a/src/main/java/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/src/main/java/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+index 544920a31b649985333f82beafa94a3392f5853e..9a14443e7318868c03814dd180ee014c1417f10c 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/navigation/PathNavigation.java
++++ b/src/main/java/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+@@ -152,7 +152,12 @@ public abstract class PathNavigation {
+             return null;
+         } else if (!this.canUpdatePath()) {
+             return null;
+-        } else if (this.path != null && !this.path.isDone() && positions.contains(this.targetPos)) {
++        // PurpurLeaf start - petal - catch early if it's still processing these positions let it keep processing
++        } else if(this.path instanceof me.mrfunny.purpurleaf.asyncpath.AsyncPath asyncPath && !asyncPath.isProcessed() && asyncPath.hasSameProcessingPositions(positions)) {
++            return this.path;
++        }
++        // PurpurLeaf end
++        else if (this.path != null && !this.path.isDone() && positions.contains(this.targetPos)) {
+             return this.path;
+         } else {
+             // Paper start - EntityPathfindEvent
+@@ -177,6 +182,25 @@ public abstract class PathNavigation {
+             int i = (int)(followRange + (float)range);
+             PathNavigationRegion pathNavigationRegion = new PathNavigationRegion(this.level, blockPos.offset(-i, -i, -i), blockPos.offset(i, i, i));
+             Path path = this.pathFinder.findPath(pathNavigationRegion, this.mob, positions, followRange, distance, this.maxVisitedNodesMultiplier);
++            // PurpurLeaf start - Petal async pathfinding
++
++            if (me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding) {
++                if (!positions.isEmpty()) {
++                    this.targetPos = positions.iterator().next();
++                }
++
++                me.mrfunny.purpurleaf.asyncpath.AsyncPathProcessor.awaitProcessing(path, processedPath -> {
++                    if (processedPath == this.path) {
++                        if (processedPath != null && processedPath.getTarget() != null) {
++                            this.targetPos = processedPath.getTarget();
++                            this.reachRange = distance;
++                            this.resetStuckTimeout();
++                        }
++                    }
++                });
++                return path;
++            }
++            // PurpurLeaf end
+             //this.level.getProfiler().pop(); // Purpur
+             if (path != null && path.getTarget() != null) {
+                 this.targetPos = path.getTarget();
+@@ -233,16 +257,17 @@ public abstract class PathNavigation {
+             if (this.isDone()) {
+                 return false;
+             } else {
+-                this.trimPath();
+-                if (this.path.getNodeCount() <= 0) {
+-                    return false;
+-                } else {
+-                    this.speedModifier = speed;
+-                    Vec3 vec3 = this.getTempMobPos();
+-                    this.lastStuckCheck = this.tick;
+-                    this.lastStuckCheckPos = vec3;
+-                    return true;
++                // PurpurLeaf start - petal async pathfinding
++                if (path.isProcessed()) {
++                    this.trimPath(); // only trim if processed
++                    if(this.path.getNodeCount() <= 0) return false;
+                 }
++                this.speedModifier = speed;
++                Vec3 vec3 = this.getTempMobPos();
++                this.lastStuckCheck = this.tick;
++                this.lastStuckCheckPos = vec3;
++                return true;
++                // PurpurLeaf end
+             }
+         }
+     }
+@@ -257,6 +282,7 @@ public abstract class PathNavigation {
+         if (this.hasDelayedRecomputation) {
+             this.recomputePath();
+         }
++        if (this.path != null && !this.path.isProcessed()) return; // PurpurLeaf - petal - skip pathfinding if we're still processing
+ 
+         if (!this.isDone()) {
+             if (this.canUpdatePath()) {
+@@ -283,6 +309,7 @@ public abstract class PathNavigation {
+     }
+ 
+     protected void followThePath() {
++        if(this.path.isProcessed()) return; // PurpurLeaf - petal skip if processed
+         Vec3 vec3 = this.getTempMobPos();
+         this.maxDistanceToWaypoint = this.mob.getBbWidth() > 0.75F ? this.mob.getBbWidth() / 2.0F : 0.75F - this.mob.getBbWidth() / 2.0F;
+         Vec3i vec3i = this.path.getNextNodePos();
+@@ -439,7 +466,7 @@ public abstract class PathNavigation {
+     public boolean shouldRecomputePath(BlockPos pos) {
+         if (this.hasDelayedRecomputation) {
+             return false;
+-        } else if (this.path != null && !this.path.isDone() && this.path.getNodeCount() != 0) {
++        } else if (this.path != null && this.path.isProcessed() && !this.path.isDone() && this.path.getNodeCount() != 0) { // PurpurLeaf skip if not processed
+             Node node = this.path.getEndNode();
+             Vec3 vec3 = new Vec3(((double)node.x + this.mob.getX()) / 2.0, ((double)node.y + this.mob.getY()) / 2.0, ((double)node.z + this.mob.getZ()) / 2.0);
+             return pos.closerToCenterThan(vec3, (double)(this.path.getNodeCount() - this.path.getNextNodeIndex()));
+diff --git a/src/main/java/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java b/src/main/java/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java
+index ce7398a617abe6e800c1e014b3ac5c970eb15c8a..24892558ce2c868a4c7124dc9c7205bc9bea9342 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java
++++ b/src/main/java/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java
+@@ -6,9 +6,20 @@ import net.minecraft.world.entity.Mob;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.pathfinder.PathFinder;
+ import net.minecraft.world.level.pathfinder.SwimNodeEvaluator;
++import net.minecraft.world.level.pathfinder.WalkNodeEvaluator;
+ import net.minecraft.world.phys.Vec3;
+ 
+ public class WaterBoundPathNavigation extends PathNavigation {
++    // PurpurLeaf start - petal async pathfinding
++    private static final me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorGenerator nodeEvaluatorGenerator = features -> {
++        SwimNodeEvaluator nodeEvaluator = new SwimNodeEvaluator(features.allowBreaching());
++        nodeEvaluator.setCanPassDoors(features.canPassDoors());
++        nodeEvaluator.setCanFloat(features.canFloat());
++        nodeEvaluator.setCanWalkOverFences(features.canWalkOverFences());
++        nodeEvaluator.setCanOpenDoors(features.canOpenDoors());
++        return nodeEvaluator;
++    };
++    // PurpurLeaf end
+     private boolean allowBreaching;
+ 
+     public WaterBoundPathNavigation(Mob entity, Level world) {
+@@ -19,7 +30,11 @@ public class WaterBoundPathNavigation extends PathNavigation {
+     protected PathFinder createPathFinder(int range) {
+         this.allowBreaching = this.mob.getType() == EntityType.DOLPHIN;
+         this.nodeEvaluator = new SwimNodeEvaluator(this.allowBreaching);
+-        return new PathFinder(this.nodeEvaluator, range);
++        // PurpurLeaf start - petal async pathfinding
++        return me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding
++            ? new PathFinder(super.nodeEvaluator, range, nodeEvaluatorGenerator)
++            : new PathFinder(super.nodeEvaluator, range);
++        // PurpurLeaf end
+     }
+ 
+     @Override
+diff --git a/src/main/java/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java b/src/main/java/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
+index 9104d7010bda6f9f73b478c11490ef9c53f76da2..5aa9204eebdb30c502df6cff5c60c4379ab42e99 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
++++ b/src/main/java/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
+@@ -4,6 +4,8 @@ import com.google.common.collect.ImmutableSet;
+ import com.mojang.datafixers.util.Pair;
+ import it.unimi.dsi.fastutil.longs.Long2LongMap;
+ import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
++
++import java.util.HashSet;
+ import java.util.Optional;
+ import java.util.Set;
+ import java.util.function.Predicate;
+@@ -59,6 +61,23 @@ public class NearestBedSensor extends Sensor<Mob> {
+             io.papermc.paper.util.PoiAccess.findAnyPoiPositions(poiManager, type -> type.is(PoiTypes.HOME), predicate, entity.blockPosition(), world.purpurConfig.villagerNearestBedSensorSearchRadius, PoiManager.Occupancy.ANY, false, Integer.MAX_VALUE, poiposes); // Purpur
+             Path path = AcquirePoi.findPathToPois(entity, new java.util.HashSet<>(poiposes));
+             // Paper end - optimise POI access
++            // PurpurLeaf start - petal async pathfinding
++            if (me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding) {
++                Path possiblePath = AcquirePoi.findPathToPois(entity, new HashSet<>(poiposes));
++                me.mrfunny.purpurleaf.asyncpath.AsyncPathProcessor.awaitProcessing(possiblePath, pathx -> {
++                    if ((pathx == null || !pathx.canReach()) && this.triedCount < 5) {
++                        this.batchCache.long2LongEntrySet().removeIf(entry -> entry.getLongValue() < this.lastUpdate);
++                    } else if (pathx != null) {
++                        BlockPos blockPosx = pathx.getTarget();
++                        Optional<Holder<PoiType>> optionalx = poiManager.getType(blockPosx);
++                        if (optionalx.isPresent()) {
++                            entity.getBrain().setMemory(MemoryModuleType.NEAREST_BED, blockPosx);
++                        }
++                    }
++                });
++                return;
++            }
++            // PurpurLeaf end
+             if (path != null && path.canReach()) {
+                 BlockPos blockPos = path.getTarget();
+                 Optional<Holder<PoiType>> optional = poiManager.getType(blockPos);
+diff --git a/src/main/java/net/minecraft/world/entity/animal/Bee.java b/src/main/java/net/minecraft/world/entity/animal/Bee.java
+index 9a6ec5e465684be7f0d54b1f7e66bdf52603e442..0bced5d60566438c94fd5df4b22caee94617ba64 100644
+--- a/src/main/java/net/minecraft/world/entity/animal/Bee.java
++++ b/src/main/java/net/minecraft/world/entity/animal/Bee.java
+@@ -1147,7 +1147,7 @@ public class Bee extends Animal implements NeutralMob, FlyingAnimal {
+                         } else {
+                             Bee.this.pathfindRandomlyTowards(Bee.this.hivePos);
+                         }
+-                    } else {
++                    }  else if (navigation.getPath() != null && navigation.getPath().isProcessed()) { // PurpurLeaf
+                         boolean flag = this.pathfindDirectlyTowards(Bee.this.hivePos);
+ 
+                         if (!flag) {
+@@ -1209,7 +1209,7 @@ public class Bee extends Animal implements NeutralMob, FlyingAnimal {
+             } else {
+                 Path pathentity = Bee.this.navigation.getPath();
+ 
+-                return pathentity != null && pathentity.getTarget().equals(pos) && pathentity.canReach() && pathentity.isDone();
++                return pathentity != null && pathentity.isProcessed() && pathentity.getTarget().equals(pos) && pathentity.canReach() && pathentity.isDone(); // PurpurLeaf - petal - ensure path is processed
+             }
+         }
+     }
+diff --git a/src/main/java/net/minecraft/world/entity/animal/frog/Frog.java b/src/main/java/net/minecraft/world/entity/animal/frog/Frog.java
+index 4c861b18fbfbae3cb2f1e3563393cfcf4005591c..f72398b0b11ff5ba935427b843ad48a1e3f6f0d7 100644
+--- a/src/main/java/net/minecraft/world/entity/animal/frog/Frog.java
++++ b/src/main/java/net/minecraft/world/entity/animal/frog/Frog.java
+@@ -193,7 +193,13 @@ public class Frog extends Animal implements VariantHolder<Holder<FrogVariant>> {
+     }
+ 
+     public Optional<Entity> getTongueTarget() {
+-        return this.entityData.get(DATA_TONGUE_TARGET_ID).stream().mapToObj(this.level()::getEntity).filter(Objects::nonNull).findFirst();
++        // PurpurLeaf start - optimise
++        OptionalInt targetIdOptional = super.entityData.get(DATA_TONGUE_TARGET_ID);
++        if(targetIdOptional.isEmpty()) return Optional.empty();
++        int targetId = targetIdOptional.getAsInt();
++        Entity entity = this.level().getEntity(targetId);
++        return entity == null ? Optional.empty() : Optional.of(entity);
++        // PurpurLeaf end
+     }
+ 
+     public void setTongueTarget(Entity entity) {
+@@ -239,8 +245,11 @@ public class Frog extends Animal implements VariantHolder<Holder<FrogVariant>> {
+     @Override
+     protected void customServerAiStep() {
+         //this.level().getProfiler().push("frogBrain"); // Purpur
+-        if ((getRider() == null || !this.isControllable()) && this.behaviorTick++ % this.activatedPriority == 0) // Pufferfish // Purpur - only use brain if no rider
+-        this.getBrain().tick((ServerLevel)this.level(), this);
++        // PurpurLeaf start - make more readable
++        if ((getRider() == null || !this.isControllable()) && this.behaviorTick++ % this.activatedPriority == 0) { // Pufferfish // Purpur - only use brain if no rider
++            this.getBrain().tick((ServerLevel)this.level(), this);
++        }
++        // PurpurLeaf end
+         //this.level().getProfiler().pop(); // Purpur
+         //this.level().getProfiler().push("frogActivityUpdate"); // Purpur
+         FrogAi.updateActivity(this);
+@@ -474,11 +483,24 @@ public class Frog extends Animal implements VariantHolder<Holder<FrogVariant>> {
+             return nodeType != PathType.WATER_BORDER && super.canCutCorner(nodeType);
+         }
+ 
++        // PurpurLeaf start - petal async pathfinding
++        private static final me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorGenerator nodeEvaluatorGenerator = features -> {
++            Frog.FrogNodeEvaluator nodeEvaluator = new Frog.FrogNodeEvaluator(true);
++            nodeEvaluator.setCanPassDoors(features.canPassDoors());
++            nodeEvaluator.setCanFloat(features.canFloat());
++            nodeEvaluator.setCanWalkOverFences(features.canWalkOverFences());
++            nodeEvaluator.setCanOpenDoors(features.canOpenDoors());
++            return nodeEvaluator;
++        };
++
+         @Override
+         protected PathFinder createPathFinder(int range) {
+             this.nodeEvaluator = new Frog.FrogNodeEvaluator(true);
+             this.nodeEvaluator.setCanPassDoors(true);
+-            return new PathFinder(this.nodeEvaluator, range);
++            return me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding
++                ? new PathFinder(super.nodeEvaluator, range, nodeEvaluatorGenerator)
++                : new PathFinder(super.nodeEvaluator, range);
+         }
++        // PurpurLeaf end
+     }
+ }
+diff --git a/src/main/java/net/minecraft/world/entity/monster/Drowned.java b/src/main/java/net/minecraft/world/entity/monster/Drowned.java
+index 94de51bf9acb32421838ffe54602310f0263b3c4..71ca9528dbfb8f6e878ac24cbc389a37b8429250 100644
+--- a/src/main/java/net/minecraft/world/entity/monster/Drowned.java
++++ b/src/main/java/net/minecraft/world/entity/monster/Drowned.java
+@@ -296,7 +296,7 @@ public class Drowned extends Zombie implements RangedAttackMob {
+     protected boolean closeToNextPos() {
+         Path pathentity = this.getNavigation().getPath();
+ 
+-        if (pathentity != null) {
++        if (pathentity != null && pathentity.isProcessed()) { // PurpurLeaf
+             BlockPos blockposition = pathentity.getTarget();
+ 
+             if (blockposition != null) {
+diff --git a/src/main/java/net/minecraft/world/entity/monster/Strider.java b/src/main/java/net/minecraft/world/entity/monster/Strider.java
+index 70650cc6f76bed79a31a9e8c86205910994a920f..93929f19b8b8eac355d79198feb9414497ffdfd5 100644
+--- a/src/main/java/net/minecraft/world/entity/monster/Strider.java
++++ b/src/main/java/net/minecraft/world/entity/monster/Strider.java
+@@ -610,12 +610,25 @@ public class Strider extends Animal implements ItemSteerable, Saddleable {
+             super(entity, world);
+         }
+ 
++        // PurpurLeaf start - petal async pathfinding
++        private static final me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorGenerator nodeEvaluatorGenerator = features -> {
++            WalkNodeEvaluator nodeEvaluator = new WalkNodeEvaluator();
++            nodeEvaluator.setCanPassDoors(features.canPassDoors());
++            nodeEvaluator.setCanFloat(features.canFloat());
++            nodeEvaluator.setCanWalkOverFences(features.canWalkOverFences());
++            nodeEvaluator.setCanOpenDoors(features.canOpenDoors());
++            return nodeEvaluator;
++        };
++
+         @Override
+         protected PathFinder createPathFinder(int range) {
+             this.nodeEvaluator = new WalkNodeEvaluator();
+             this.nodeEvaluator.setCanPassDoors(true);
+-            return new PathFinder(this.nodeEvaluator, range);
++            return me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding
++                ? new PathFinder(super.nodeEvaluator, range, nodeEvaluatorGenerator)
++                : new PathFinder(super.nodeEvaluator, range);
+         }
++        // PurpurLeaf end
+ 
+         @Override
+         protected boolean hasValidPathType(PathType pathType) {
+diff --git a/src/main/java/net/minecraft/world/entity/monster/warden/Warden.java b/src/main/java/net/minecraft/world/entity/monster/warden/Warden.java
+index 8e24cd9ed03e2f11da6f4fb2dd58dd9b9e5d7a06..0e19b6705bcaa7363d86f7ab20ef66b96cb3eb7a 100644
+--- a/src/main/java/net/minecraft/world/entity/monster/warden/Warden.java
++++ b/src/main/java/net/minecraft/world/entity/monster/warden/Warden.java
+@@ -617,12 +617,19 @@ public class Warden extends Monster implements VibrationSystem {
+             protected PathFinder createPathFinder(int range) {
+                 this.nodeEvaluator = new WalkNodeEvaluator();
+                 this.nodeEvaluator.setCanPassDoors(true);
+-                return new PathFinder(this.nodeEvaluator, range) { // CraftBukkit - decompile error
++                // PurpurLeaf start - petal async pathfinder
++                return  me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding ? new PathFinder(super.nodeEvaluator, range, GroundPathNavigation.nodeEvaluatorGenerator) {
++                    @Override
++                    protected float distance(Node a, Node b) {
++                        return a.distanceToXZ(b);
++                    }
++                } : new PathFinder(super.nodeEvaluator, range) {
+                     @Override
+                     protected float distance(Node a, Node b) {
+                         return a.distanceToXZ(b);
+                     }
+                 };
++                // PurpurLeaf end
+             }
+         };
+     }
+diff --git a/src/main/java/net/minecraft/world/level/block/ShulkerBoxBlock.java b/src/main/java/net/minecraft/world/level/block/ShulkerBoxBlock.java
+index 6b2c3afa04a3564e435633b521d918ed795f9f65..72e8d1bd2a433316f3cb32cd5164039063464ac6 100644
+--- a/src/main/java/net/minecraft/world/level/block/ShulkerBoxBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/ShulkerBoxBlock.java
+@@ -227,6 +227,11 @@ public class ShulkerBoxBlock extends BaseEntityBlock {
+ 
+     @Override
+     protected VoxelShape getShape(BlockState state, BlockGetter world, BlockPos pos, CollisionContext context) {
++        // PurpurLeaf - petal async pathfinding
++        if(me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding && Thread.currentThread().getName().endsWith("-purpurleaf")) {
++            return Shapes.block();
++        }
++        // PurpurLeaf end
+         BlockEntity blockEntity = world.getBlockEntity(pos);
+         return blockEntity instanceof ShulkerBoxBlockEntity ? Shapes.create(((ShulkerBoxBlockEntity)blockEntity).getBoundingBox(state)) : Shapes.block();
+     }
+diff --git a/src/main/java/net/minecraft/world/level/block/piston/MovingPistonBlock.java b/src/main/java/net/minecraft/world/level/block/piston/MovingPistonBlock.java
+index f970fca8a8b479f2d2b927bcee2d73f02bfcd1b3..62086c6b1650a6f768244f859cbeaafc14725b81 100644
+--- a/src/main/java/net/minecraft/world/level/block/piston/MovingPistonBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/piston/MovingPistonBlock.java
+@@ -109,6 +109,11 @@ public class MovingPistonBlock extends BaseEntityBlock {
+ 
+     @Override
+     protected VoxelShape getCollisionShape(BlockState state, BlockGetter world, BlockPos pos, CollisionContext context) {
++        // PurpurLeaf - petal async pathfinding
++        if(me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding && Thread.currentThread().getName().endsWith("-purpurleaf")) {
++            return Shapes.empty();
++        }
++        // PurpurLeaf end
+         PistonMovingBlockEntity pistonMovingBlockEntity = this.getBlockEntity(world, pos);
+         return pistonMovingBlockEntity != null ? pistonMovingBlockEntity.getCollisionShape(world, pos) : Shapes.empty();
+     }
+diff --git a/src/main/java/net/minecraft/world/level/pathfinder/Path.java b/src/main/java/net/minecraft/world/level/pathfinder/Path.java
+index d9d0fff9962131808d54cca20f209df50b8e4af1..a9ab19ee343cb47c7f9e8e65a23e01adbb32dc82 100644
+--- a/src/main/java/net/minecraft/world/level/pathfinder/Path.java
++++ b/src/main/java/net/minecraft/world/level/pathfinder/Path.java
+@@ -27,6 +27,11 @@ public class Path {
+         this.reached = reachesTarget;
+     }
+ 
++    // PurpurLeaf start - for async paths
++    public boolean isProcessed() {
++        return true; // Standard paths are already processed
++    }
++    // PurpurLeaf end
+     public void advance() {
+         this.nextNodeIndex++;
+     }
+diff --git a/src/main/java/net/minecraft/world/level/pathfinder/PathFinder.java b/src/main/java/net/minecraft/world/level/pathfinder/PathFinder.java
+index 404080976208c30e9e95e5bee47c2a749e709a45..c0e173979f9be008ff12a62e7cf0f6f5655af9f8 100644
+--- a/src/main/java/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/src/main/java/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -25,37 +25,66 @@ public class PathFinder {
+     private static final boolean DEBUG = false;
+     private final BinaryHeap openSet = new BinaryHeap();
+ 
+-    public PathFinder(NodeEvaluator pathNodeMaker, int range) {
++    // PurpurLeaf start - petal async pathfinding
++    @Nullable
++    private final me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorGenerator nodeEvaluatorGenerator;
++    public PathFinder(NodeEvaluator pathNodeMaker, int range, @Nullable me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorGenerator generator) {
+         this.nodeEvaluator = pathNodeMaker;
+         this.maxVisitedNodes = range;
++        this.nodeEvaluatorGenerator = generator;
++    }
++
++    public PathFinder(NodeEvaluator pathNodeMaker, int range) {
++        this(pathNodeMaker, range, null);
+     }
+ 
+     @Nullable
+     public Path findPath(PathNavigationRegion world, Mob mob, Set<BlockPos> positions, float followRange, int distance, float rangeMultiplier) {
+-        this.openSet.clear();
+-        this.nodeEvaluator.prepare(world, mob);
+-        Node node = this.nodeEvaluator.getStart();
++        if(!me.mrfunny.purpurleaf.config.PurpurleafConfig.enableAsynchronousPathfinding) {
++            this.openSet.clear();
++        }
++        NodeEvaluator nodeEvaluator = this.nodeEvaluatorGenerator == null
++            ? this.nodeEvaluator
++            : me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorCache.takeNodeEvaluator(this.nodeEvaluatorGenerator, this.nodeEvaluator);
++        nodeEvaluator.prepare(world, mob);
++        Node node = nodeEvaluator.getStart();
+         if (node == null) {
++            me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorCache.removeNodeEvaluator(nodeEvaluator);
+             return null;
+-        } else {
+-            // Paper start - Perf: remove streams and optimize collection
+-            List<Map.Entry<Target, BlockPos>> map = Lists.newArrayList();
+-            for (final BlockPos pos : positions) {
+-                map.add(new java.util.AbstractMap.SimpleEntry<>(this.nodeEvaluator.getTarget(pos.getX(), pos.getY(), pos.getZ()), pos));
+-            }
+-            // Paper end - Perf: remove streams and optimize collection
+-            Path path = this.findPath(world.getProfiler(), node, map, followRange, distance, rangeMultiplier);
+-            this.nodeEvaluator.done();
+-            return path;
+         }
++        // Paper start - Perf: remove streams and optimize collection
++        List<Map.Entry<Target, BlockPos>> map = Lists.newArrayList();
++        for (final BlockPos pos : positions) {
++            map.add(new java.util.AbstractMap.SimpleEntry<>(nodeEvaluator.getTarget(pos.getX(), pos.getY(), pos.getZ()), pos));
++        }
++        // Paper end - Perf: remove streams and optimize collection
++        if(this.nodeEvaluatorGenerator != null) {
++            return new me.mrfunny.purpurleaf.asyncpath.AsyncPath(Lists.newArrayList(), positions, () -> {
++                try {
++                    return this.findPath(nodeEvaluator, world.getProfiler(), node, map, followRange, distance, rangeMultiplier);
++                } catch (Exception var12) {
++                    var12.printStackTrace();
++
++                } finally {
++                    nodeEvaluator.done();
++                    me.mrfunny.purpurleaf.asyncpath.NodeEvaluatorCache.returnNodeEvaluator(nodeEvaluator);
++                }
++                return null;
++            });
++        }
++        Path path = this.findPath(nodeEvaluator, world.getProfiler(), node, map, followRange, distance, rangeMultiplier);
++        nodeEvaluator.done();
++        return path;
+     }
++    // PurpurLeaf end
+ 
+     @Nullable
+     // Paper start - Perf: remove streams and optimize collection
+-    private Path findPath(ProfilerFiller profiler, Node startNode, List<Map.Entry<Target, BlockPos>> positions, float followRange, int distance, float rangeMultiplier) {
++    private Path findPath(NodeEvaluator evaluator, ProfilerFiller profiler, Node startNode, List<Map.Entry<Target, BlockPos>> positions, float followRange, int distance, float rangeMultiplier) { // PurpurLeaf
+         //profiler.push("find_path"); // Purpur
+         //profiler.markForCharting(MetricCategory.PATH_FINDING); // Purpur
+         // Set<Target> set = positions.keySet();
++        org.apache.commons.lang.Validate.isTrue(!positions.isEmpty()); // PurpurLeaf
+         startNode.g = 0.0F;
+         startNode.h = this.getBestH(startNode, positions); // Paper - optimize collection
+         startNode.f = startNode.h;
+@@ -90,7 +119,7 @@ public class PathFinder {
+             }
+ 
+             if (!(node.distanceTo(startNode) >= followRange)) {
+-                int k = this.nodeEvaluator.getNeighbors(this.neighbors, node);
++                int k = evaluator.getNeighbors(this.neighbors, node); // PurpurLeaf
+ 
+                 for (int l = 0; l < k; l++) {
+                     Node node2 = this.neighbors[l];
+diff --git a/src/main/java/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java b/src/main/java/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
+index 6308822f819d7cb84c8070c8a7eec1a3f822114b..89e44c4c94e40c8731fcb7750ea94019a90958e4 100644
+--- a/src/main/java/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
++++ b/src/main/java/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
+@@ -15,7 +15,7 @@ import net.minecraft.world.level.block.state.BlockState;
+ import net.minecraft.world.level.material.FluidState;
+ 
+ public class SwimNodeEvaluator extends NodeEvaluator {
+-    private final boolean allowBreaching;
++    public final boolean allowBreaching; // PurpurLeaf - Kaiiju - make public
+     private final Long2ObjectMap<PathType> pathTypesByPosCache = new Long2ObjectOpenHashMap<>();
+ 
+     public SwimNodeEvaluator(boolean canJumpOutOfWater) {
