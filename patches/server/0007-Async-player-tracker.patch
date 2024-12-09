@@ -53,6 +53,29 @@ index 7ce9ebba8ce304d1f3f21d4f15ee5f3560d7700b..a2c737e0498cd49848ea60cfa95a1ad2
  
          HandlerList handlers = event.getHandlers();
          RegisteredListener[] listeners = handlers.getRegisteredListeners();
+diff --git a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+index a780d3a43ac67156acc365649c99d851b22178c1..af9cf60c4280cc5bc51995a825ac8f1c229099cc 100644
+--- a/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
++++ b/src/main/java/me/mrfunny/purpurleaf/PurpurLeafAPI.java
+@@ -12,11 +12,16 @@ public class PurpurLeafAPI {
+     private static ExecutorService executor;
+     private static ScheduledExecutorService scheduledExecutor;
+     public static void init() {
++        int minThreads = 4;
++        int maxThreads = Runtime.getRuntime().availableProcessors() * 2;
++        if(maxThreads < minThreads) {
++            maxThreads = minThreads;
++        }
+         executor = PurpurleafConfig.virtualThreads
+             ? Executors.newThreadPerTaskExecutor(new VirtualTickThreadFactory())
+             : new ThreadPoolExecutor(
+-                4, // considering all processors have hyperthreading, so 4 threads will take exactly 1 full core
+-                Runtime.getRuntime().availableProcessors() * 2, // we don't really want to have more than 2 threads per logical core
++                minThreads, // considering all processors have hyperthreading, so 4 threads will take exactly 1 full core
++                maxThreads, // we don't really want to have more than 2 threads per logical core
+                 5L,
+                 TimeUnit.SECONDS,
+                 new LinkedBlockingQueue<>(),
 diff --git a/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java b/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
 index 0a21da5931d9c308992c24bc7965154a3e37aef3..1a857730be6e03b2f82687cdbdfb4c468dbaff94 100644
 --- a/src/main/java/me/mrfunny/purpurleaf/config/PurpurleafConfig.java
